@@ -1,4 +1,4 @@
-const githubUrl = "https://github.com/popupie";
+const githubUrl = "https://github.com/popupie/MV-MZ-Browser-Player";
 
 interface AboutModalProps {
   onClose: () => void;
