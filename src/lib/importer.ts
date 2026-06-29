@@ -9,6 +9,20 @@ type ProgressCallback = (progress: ImportProgress) => void;
 const PROGRESS_FILE_STEP = 25;
 const IDB_BATCH_SIZE = 100;
 
+function zipNameBytes(bytes: string[] | Uint8Array | Buffer): Uint8Array {
+  if (bytes instanceof Uint8Array) return bytes;
+  return Uint8Array.from(bytes.map((byte) => (typeof byte === "string" ? byte.charCodeAt(0) : byte)));
+}
+
+export function decodeZipFileName(bytes: string[] | Uint8Array | Buffer): string {
+  const data = zipNameBytes(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(data);
+  } catch {
+    return new TextDecoder("shift_jis", { fatal: true }).decode(data);
+  }
+}
+
 function shouldReportProgress(index: number, total: number, lastReportTime: number): boolean {
   return index === total || index % PROGRESS_FILE_STEP === 0 || performance.now() - lastReportTime > 160;
 }
@@ -34,7 +48,7 @@ export async function candidateFromFolder(files: FileList | File[]): Promise<Imp
 
 export async function candidateFromZip(file: File, onProgress?: ProgressCallback): Promise<ImportCandidate> {
   onProgress?.({ phase: "reading", label: "Reading ZIP", completed: 0, total: file.size });
-  const zip = await JSZip.loadAsync(file);
+  const zip = await JSZip.loadAsync(file, { decodeFileName: decodeZipFileName });
   const zipEntries = Object.values(zip.files).filter((entry) => !entry.dir);
   const files: Array<{ path: string; file: Blob }> = [];
   let lastReportTime = performance.now();
