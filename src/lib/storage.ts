@@ -1,0 +1,374 @@
+import { detectMime } from "./mime";
+import { normalizeStoredPath } from "./paths";
+import type { GameRecord, StoredGameFile, StorageKind } from "./types";
+
+const DB_NAME = "mz-browser-player";
+const DB_VERSION = 1;
+const GAME_STORE = "games";
+const FILE_STORE = "files";
+const BLOB_STORE = "blobs";
+
+type BrowserFileSystemDirectoryHandle = {
+  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemDirectoryHandle>;
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemFileHandle>;
+  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
+};
+
+type BrowserFileSystemFileHandle = {
+  getFile(): Promise<File>;
+  createWritable(): Promise<{
+    write(data: Blob): Promise<void>;
+    close(): Promise<void>;
+  }>;
+};
+
+type StoredBlobRecord = {
+  key: string;
+  blob: Blob;
+};
+
+export function fileKey(gameId: string, path: string): string {
+  return `${gameId}\n${normalizeStoredPath(path)}`;
+}
+
+function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+  });
+}
+
+function transactionDone(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted."));
+    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed."));
+  });
+}
+
+export async function openPlayerDb(): Promise<IDBDatabase> {
+  const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+  request.onupgradeneeded = () => {
+    const db = request.result;
+    if (!db.objectStoreNames.contains(GAME_STORE)) {
+      db.createObjectStore(GAME_STORE, { keyPath: "id" });
+    }
+    if (!db.objectStoreNames.contains(FILE_STORE)) {
+      const store = db.createObjectStore(FILE_STORE, { keyPath: "key" });
+      store.createIndex("gameId", "gameId", { unique: false });
+    }
+    if (!db.objectStoreNames.contains(BLOB_STORE)) {
+      db.createObjectStore(BLOB_STORE, { keyPath: "key" });
+    }
+  };
+
+  return requestToPromise(request);
+}
+
+export async function getAllGames(): Promise<GameRecord[]> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(GAME_STORE, "readonly");
+    const games = await requestToPromise<GameRecord[]>(transaction.objectStore(GAME_STORE).getAll());
+    return games.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } finally {
+    db.close();
+  }
+}
+
+export async function getGame(gameId: string): Promise<GameRecord | undefined> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(GAME_STORE, "readonly");
+    return await requestToPromise<GameRecord | undefined>(transaction.objectStore(GAME_STORE).get(gameId));
+  } finally {
+    db.close();
+  }
+}
+
+export async function putGame(game: GameRecord): Promise<void> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(GAME_STORE, "readwrite");
+    transaction.objectStore(GAME_STORE).put(game);
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+export async function updateGameSettings(game: GameRecord): Promise<void> {
+  await putGame({ ...game, updatedAt: new Date().toISOString() });
+}
+
+export async function deleteGame(gameId: string): Promise<void> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction([GAME_STORE, FILE_STORE, BLOB_STORE], "readwrite");
+    transaction.objectStore(GAME_STORE).delete(gameId);
+
+    const fileIndex = transaction.objectStore(FILE_STORE).index("gameId");
+    const fileRequest = fileIndex.openCursor(IDBKeyRange.only(gameId));
+    fileRequest.onsuccess = () => {
+      const cursor = fileRequest.result;
+      if (!cursor) return;
+      const record = cursor.value as StoredGameFile & { key: string };
+      transaction.objectStore(BLOB_STORE).delete(record.key);
+      cursor.delete();
+      cursor.continue();
+    };
+
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+
+  await removeOpfsGame(gameId);
+}
+
+export async function putStoredFile(record: StoredGameFile): Promise<void> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(FILE_STORE, "readwrite");
+    transaction.objectStore(FILE_STORE).put({ ...record, key: fileKey(record.gameId, record.path) });
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+export async function putStoredFiles(records: StoredGameFile[]): Promise<void> {
+  if (records.length === 0) return;
+
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(FILE_STORE, "readwrite");
+    const store = transaction.objectStore(FILE_STORE);
+    for (const record of records) {
+      store.put({ ...record, key: fileKey(record.gameId, record.path) });
+    }
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+export async function putIndexedDbBlob(gameId: string, path: string, blob: Blob): Promise<StoredGameFile> {
+  const normalizedPath = normalizeStoredPath(path);
+  const key = fileKey(gameId, normalizedPath);
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction([BLOB_STORE, FILE_STORE], "readwrite");
+    transaction.objectStore(BLOB_STORE).put({ key, blob } satisfies StoredBlobRecord);
+    transaction.objectStore(FILE_STORE).put({
+      key,
+      gameId,
+      path: normalizedPath,
+      size: blob.size,
+      mime: detectMime(normalizedPath),
+      storageRef: key,
+      storageKind: "indexeddb" satisfies StorageKind
+    });
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+
+  return {
+    gameId,
+    path: normalizedPath,
+    size: blob.size,
+    mime: detectMime(normalizedPath),
+    storageRef: key,
+    storageKind: "indexeddb"
+  };
+}
+
+export async function putIndexedDbBlobs(records: Array<{ gameId: string; path: string; blob: Blob }>): Promise<StoredGameFile[]> {
+  if (records.length === 0) return [];
+
+  const storedFiles = records.map(({ gameId, path, blob }) => {
+    const normalizedPath = normalizeStoredPath(path);
+    const key = fileKey(gameId, normalizedPath);
+    const fileRecord: StoredGameFile & { key: string } = {
+      key,
+      gameId,
+      path: normalizedPath,
+      size: blob.size,
+      mime: detectMime(normalizedPath),
+      storageRef: key,
+      storageKind: "indexeddb"
+    };
+
+    return {
+      blobRecord: { key, blob } satisfies StoredBlobRecord,
+      fileRecord
+    };
+  });
+
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction([BLOB_STORE, FILE_STORE], "readwrite");
+    const blobStore = transaction.objectStore(BLOB_STORE);
+    const fileStore = transaction.objectStore(FILE_STORE);
+    for (const { blobRecord, fileRecord } of storedFiles) {
+      blobStore.put(blobRecord);
+      fileStore.put(fileRecord);
+    }
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+
+  return storedFiles.map(({ fileRecord }) => {
+    const { key: _key, ...record } = fileRecord;
+    return record;
+  });
+}
+
+export async function getStoredFile(gameId: string, path: string): Promise<StoredGameFile | undefined> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(FILE_STORE, "readonly");
+    return await requestToPromise<StoredGameFile | undefined>(transaction.objectStore(FILE_STORE).get(fileKey(gameId, path)));
+  } finally {
+    db.close();
+  }
+}
+
+export async function getIndexedDbBlob(storageRef: string): Promise<Blob | undefined> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(BLOB_STORE, "readonly");
+    const record = await requestToPromise<StoredBlobRecord | undefined>(transaction.objectStore(BLOB_STORE).get(storageRef));
+    return record?.blob;
+  } finally {
+    db.close();
+  }
+}
+
+function getOpfsRoot(): Promise<BrowserFileSystemDirectoryHandle> | undefined {
+  const storage = navigator.storage as StorageManager & {
+    getDirectory?: () => Promise<BrowserFileSystemDirectoryHandle>;
+  };
+  return storage.getDirectory?.();
+}
+
+export function supportsOpfs(): boolean {
+  return typeof navigator !== "undefined" && Boolean(getOpfsRoot());
+}
+
+async function getOpfsGameDir(gameId: string, create: boolean): Promise<BrowserFileSystemDirectoryHandle> {
+  const root = await getOpfsRoot();
+  if (!root) throw new Error("OPFS is not supported in this browser.");
+  const gamesDir = await root.getDirectoryHandle("games", { create });
+  return gamesDir.getDirectoryHandle(gameId, { create });
+}
+
+async function getOpfsParentDir(gameId: string, path: string): Promise<{ dir: BrowserFileSystemDirectoryHandle; name: string }> {
+  const parts = normalizeStoredPath(path).split("/");
+  const name = parts.pop();
+  if (!name) throw new Error("Invalid file path.");
+
+  let dir = await getOpfsGameDir(gameId, true);
+  for (const part of parts) {
+    dir = await dir.getDirectoryHandle(part, { create: true });
+  }
+
+  return { dir, name };
+}
+
+export async function createOpfsWriter(gameId: string): Promise<{
+  putFile(path: string, blob: Blob): Promise<StoredGameFile>;
+}> {
+  const gameDir = await getOpfsGameDir(gameId, true);
+  const dirCache = new Map<string, BrowserFileSystemDirectoryHandle>([["", gameDir]]);
+
+  async function getCachedDir(parts: string[]): Promise<BrowserFileSystemDirectoryHandle> {
+    const cacheKey = parts.join("/");
+    const cached = dirCache.get(cacheKey);
+    if (cached) return cached;
+
+    const parent = await getCachedDir(parts.slice(0, -1));
+    const dir = await parent.getDirectoryHandle(parts[parts.length - 1], { create: true });
+    dirCache.set(cacheKey, dir);
+    return dir;
+  }
+
+  return {
+    async putFile(path: string, blob: Blob): Promise<StoredGameFile> {
+      const normalizedPath = normalizeStoredPath(path);
+      const parts = normalizedPath.split("/");
+      const name = parts.pop();
+      if (!name) throw new Error("Invalid file path.");
+
+      const dir = await getCachedDir(parts);
+      const handle = await dir.getFileHandle(name, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+
+      return {
+        gameId,
+        path: normalizedPath,
+        size: blob.size,
+        mime: detectMime(normalizedPath),
+        storageRef: `games/${gameId}/${normalizedPath}`,
+        storageKind: "opfs"
+      };
+    }
+  };
+}
+
+export async function putOpfsFile(gameId: string, path: string, blob: Blob): Promise<StoredGameFile> {
+  const normalizedPath = normalizeStoredPath(path);
+  const { dir, name } = await getOpfsParentDir(gameId, normalizedPath);
+  const handle = await dir.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+
+  const record: StoredGameFile = {
+    gameId,
+    path: normalizedPath,
+    size: blob.size,
+    mime: detectMime(normalizedPath),
+    storageRef: `games/${gameId}/${normalizedPath}`,
+    storageKind: "opfs"
+  };
+  await putStoredFile(record);
+  return record;
+}
+
+export async function getOpfsBlob(gameId: string, path: string): Promise<Blob | undefined> {
+  try {
+    const parts = normalizeStoredPath(path).split("/");
+    const name = parts.pop();
+    if (!name) return undefined;
+
+    let dir = await getOpfsGameDir(gameId, false);
+    for (const part of parts) {
+      dir = await dir.getDirectoryHandle(part);
+    }
+    const handle = await dir.getFileHandle(name);
+    return await handle.getFile();
+  } catch {
+    return undefined;
+  }
+}
+
+async function removeOpfsGame(gameId: string): Promise<void> {
+  try {
+    const root = await getOpfsRoot();
+    if (!root) return;
+    const gamesDir = await root.getDirectoryHandle("games");
+    await gamesDir.removeEntry(gameId, { recursive: true });
+  } catch {
+    // OPFS cleanup is best-effort because older browsers can store only in IndexedDB.
+  }
+}
+
+export async function estimateStorage(): Promise<StorageEstimate | undefined> {
+  return navigator.storage?.estimate?.();
+}
