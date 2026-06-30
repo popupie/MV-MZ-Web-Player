@@ -2,7 +2,7 @@ import { detectMime } from "./mime";
 import { normalizeStoredPath } from "./paths";
 import type { GameRecord, StoredGameFile, StorageKind } from "./types";
 
-const DB_NAME = "mz-browser-player";
+const DB_NAME = "mvmz-browser-player";
 const DB_VERSION = 1;
 const GAME_STORE = "games";
 const FILE_STORE = "files";
