@@ -10,6 +10,7 @@ import { defaultDictionaryDismissGuard, dictionaryGuardFor, overlayTogglePatch, 
 import type { DictionaryDismissGuard, GameRecord, PlayerToParentMessage } from "./lib/types";
 
 const textLogLimit = 100;
+const serviceTitle = "MV/MZ Web Player";
 
 export default function App() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -58,6 +59,10 @@ export default function App() {
     setTextLogs([]);
     setRecordingGuardTrigger(false);
   }, [library.activeGame?.id]);
+
+  useEffect(() => {
+    document.title = library.activeGame ? `${library.activeGame.title} | ${serviceTitle}` : serviceTitle;
+  }, [library.activeGame]);
 
   useEffect(() => {
     if (!aboutOpen) return;
@@ -163,6 +168,7 @@ export default function App() {
         resetError={() => library.setError(null)}
         setAboutOpen={setAboutOpen}
         setActiveGameId={library.setActiveGameId}
+        setIdle={() => library.setActiveGameId(null)}
         setDictionaryGuard={(game, guard) => void setDictionaryGuard(game, guard)}
         setRecordingGuardTrigger={setRecordingGuardTrigger}
         storage={library.storage}
