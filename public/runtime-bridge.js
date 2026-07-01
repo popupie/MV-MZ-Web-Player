@@ -463,13 +463,20 @@
       overlayState.hoveredTextEntry = null;
     };
 
-    const consumeOverlayPointer = (event) => {
+    const consumeOverlayTextPointerEvent = (event) => {
       const entry = overlayTextEntry(event.target);
       if (!entry) return;
       overlayState.hoveredTextEntry = entry;
       event.stopPropagation();
-      if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
-      if (event.type === "pointerup" || event.type === "mouseup" || event.type === "click" || event.type === "touchend") returnFocus();
+    };
+
+    const restoreGameFocusAfterSurfacePointer = (event) => {
+      if (overlayTextEntry(event.target) || !eventTargetsGameSurface(event.target)) return;
+      if (!["pointerup", "mouseup", "click", "touchend"].includes(event.type)) return;
+      window.setTimeout(() => {
+        focusGameTarget();
+        returnFocus();
+      }, 0);
     };
 
     const returnFocus = () => {
@@ -480,7 +487,8 @@
     };
 
     for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "touchstart", "touchend"]) {
-      window.addEventListener(type, consumeOverlayPointer, true);
+      window.addEventListener(type, consumeOverlayTextPointerEvent, true);
+      window.addEventListener(type, restoreGameFocusAfterSurfacePointer, true);
     }
     overlayState.root.addEventListener("pointerover", trackOverlayText, true);
     overlayState.root.addEventListener("pointermove", trackOverlayText, true);
@@ -506,6 +514,11 @@
 
   function overlayTextEntry(target) {
     return target instanceof Element ? target.closest(".mz-player-text-overlay-entry") : null;
+  }
+
+  function eventTargetsGameSurface(target) {
+    if (target === document || target === document.body || target === document.documentElement) return true;
+    return target instanceof Element && Boolean(target.closest("canvas, video"));
   }
 
   function dictionaryGuardActive() {
