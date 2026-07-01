@@ -23,25 +23,29 @@ export function DictionaryGuardPanel({
   setRecording,
 }: DictionaryGuardPanelProps) {
   return (
-    <section className="guard-popover" aria-label="Dictionary dismiss guard settings">
+    <section className="guard-popover" aria-label="Guard settings">
       <div className="guard-row">
-        <span>Dismiss guard</span>
+        <span>Guard</span>
         <button
           type="button"
-          aria-label="Dictionary dismiss guard"
-          title="Dictionary dismiss guard"
+          aria-label="Guard"
+          title="Guard"
           aria-pressed={guard.enabled}
           disabled={!activeGame}
-          onClick={() => activeGame && onToggle(activeGame, { ...guard, enabled: !guard.enabled })}
+          onClick={() => {
+            if (!activeGame) return;
+            if (guard.enabled) setRecording(false);
+            onToggle(activeGame, { ...guard, enabled: !guard.enabled });
+          }}
         >
           {guard.enabled ? "On" : "Off"}
         </button>
       </div>
-      <div className="guard-chips">
+      <div className={guard.enabled ? "guard-chips" : "guard-chips disabled"}>
         {guard.triggers.map((trigger, index) => {
           const label = chordLabel(trigger);
           return (
-            <button className="guard-chip removable" key={`${label}:${index}`} type="button" disabled={!activeGame} onClick={() => activeGame && onRemoveTrigger(activeGame, index)}>
+            <button className="guard-chip removable" key={`${label}:${index}`} type="button" disabled={!activeGame || !guard.enabled} onClick={() => activeGame && onRemoveTrigger(activeGame, index)}>
               <span>{label}</span>
               <Icon name="x" />
             </button>
@@ -50,10 +54,10 @@ export function DictionaryGuardPanel({
         <button
           type="button"
           className={recording ? "guard-add-button recording" : "guard-add-button"}
-          aria-label="Add dictionary trigger"
-          title="Add dictionary trigger"
+          aria-label="Add guard trigger"
+          title="Add guard trigger"
           aria-pressed={recording}
-          disabled={!activeGame}
+          disabled={!activeGame || !guard.enabled}
           onClick={(event) => {
             setRecording(true);
             event.currentTarget.focus();

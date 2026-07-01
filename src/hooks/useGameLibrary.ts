@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { candidateFromFolder, candidateFromZip, importCandidate } from "../lib/importer";
+import { normalizePlayerSettings } from "../lib/playerSettings";
 import { registerPlayerServiceWorker } from "../lib/serviceWorker";
 import { deleteGame, estimateStorage, getAllGames, updateGameSettings } from "../lib/storage";
 import type { GameRecord, ImportProgress } from "../lib/types";
@@ -44,7 +45,10 @@ export function useGameLibrary(onImportStart?: () => void) {
   }
 
   async function refreshGames(nextActiveId?: string) {
-    const nextGames = await getAllGames();
+    const nextGames = (await getAllGames()).map((game) => ({
+      ...game,
+      settings: normalizePlayerSettings(game.settings),
+    }));
     setGames(nextGames);
     setStorage(await estimateStorage());
     if (nextActiveId) {
@@ -97,7 +101,7 @@ export function useGameLibrary(onImportStart?: () => void) {
   async function saveGameSettings(game: GameRecord, patch: Partial<GameRecord["settings"]>): Promise<GameRecord> {
     const updated: GameRecord = {
       ...game,
-      settings: { ...game.settings, ...patch },
+      settings: normalizePlayerSettings({ ...game.settings, ...patch }),
       updatedAt: new Date().toISOString(),
     };
     setGames((items) => items.map((item) => (item.id === updated.id ? updated : item)));

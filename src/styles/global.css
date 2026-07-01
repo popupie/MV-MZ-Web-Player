@@ -559,6 +559,10 @@ progress::-moz-progress-bar {
   min-height: 30px;
 }
 
+.guard-chips.disabled {
+  opacity: 0.62;
+}
+
 .guard-chips button {
   background: var(--color-background);
 }

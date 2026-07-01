@@ -1,36 +1,13 @@
 import type { PlayerSettings } from "./types";
+import { defaultDictionaryDismissGuard, defaultReservedKeys } from "./playerSettings";
 
 export const defaultPlayerSettings = (): PlayerSettings => ({
   overlayEnabled: false,
   readableOverlay: false,
   readerMode: false,
   dictionaryDismissGuard: {
-    enabled: true,
-    triggers: [
-      {
-        ctrlKey: true,
-        label: "Ctrl"
-      }
-    ]
+    ...defaultDictionaryDismissGuard,
+    triggers: defaultDictionaryDismissGuard.triggers.map((trigger) => ({ ...trigger })),
   },
-  reservedKeys: [
-    {
-      code: "KeyT",
-      altKey: true,
-      action: "toggleOverlay",
-      label: "Alt+T"
-    },
-    {
-      code: "KeyR",
-      altKey: true,
-      action: "toggleReader",
-      label: "Alt+R"
-    },
-    {
-      code: "KeyF",
-      altKey: true,
-      action: "fullscreen",
-      label: "Alt+F"
-    }
-  ]
+  reservedKeys: defaultReservedKeys.map((key) => ({ ...key })),
 });

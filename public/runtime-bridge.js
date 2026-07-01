@@ -14,8 +14,6 @@
     textLogTimers: new Map(),
     textLogValues: new Map(),
     consumedGuardKeyCodes: new Set(),
-    dismissShield: null,
-    dismissShieldTimer: 0,
     hoveredTextEntry: null,
     raf: 0,
     installedHooks: false,
@@ -41,12 +39,13 @@
 
   function normalizeSettings(next) {
     const normalized = next || {};
+    const overlayEnabled = Boolean(normalized.overlayEnabled);
     return {
       reservedKeys: normalized.reservedKeys || [],
       dictionaryDismissGuard: normalizeDictionaryDismissGuard(normalized.dictionaryDismissGuard),
-      overlayEnabled: Boolean(normalized.overlayEnabled),
-      readableOverlay: Boolean(normalized.readableOverlay),
-      readerMode: Boolean(normalized.readerMode)
+      overlayEnabled,
+      readableOverlay: overlayEnabled && Boolean(normalized.readableOverlay),
+      readerMode: overlayEnabled
     };
   }
 
@@ -54,10 +53,10 @@
     const guard = next || {};
     const triggers = Array.isArray(guard.triggers) && guard.triggers.length > 0
       ? guard.triggers.map(normalizeKeyChord).filter(Boolean)
-      : [{ ctrlKey: true, label: "Ctrl" }];
+      : [];
     return {
       enabled: guard.enabled !== false,
-      triggers: triggers.length > 0 ? triggers : [{ ctrlKey: true, label: "Ctrl" }]
+      triggers
     };
   }
 
@@ -166,13 +165,12 @@
       if (message.type === "player-settings") {
         settings = normalizeSettings(message.settings);
         if (!dictionaryGuardActive()) {
-          overlayState.consumedGuardKeyCodes.clear();
-          disarmDictionaryDismissShield();
+          clearGuardState();
         }
       }
-      if (message.type === "overlay-visible") settings = { ...settings, overlayEnabled: Boolean(message.enabled) };
+      if (message.type === "overlay-visible") settings = normalizeSettings({ ...settings, overlayEnabled: Boolean(message.enabled) });
       if (message.type === "reader-mode") {
-        settings = { ...settings, readerMode: Boolean(message.enabled), overlayEnabled: message.enabled ? true : settings.overlayEnabled };
+        settings = normalizeSettings({ ...settings, overlayEnabled: message.enabled ? true : settings.overlayEnabled });
       }
       if (message.type === "focus-game") {
         refreshOverlayClasses();
@@ -457,7 +455,6 @@
       const entry = overlayTextEntry(event.target);
       if (!entry) return;
       overlayState.hoveredTextEntry = entry;
-      maybeArmDictionaryDismissFromPointer(event, entry);
     };
 
     const clearOverlayText = (event) => {
@@ -485,6 +482,14 @@
     for (const type of ["keydown", "keypress", "keyup"]) {
       window.addEventListener(type, handleDictionaryGuardKeyEvent, true);
     }
+    window.addEventListener("blur", clearGuardState, true);
+    document.addEventListener(
+      "visibilitychange",
+      () => {
+        if (document.visibilityState !== "visible") clearGuardState();
+      },
+      true
+    );
   }
 
   function overlayTextEntry(target) {
@@ -495,15 +500,9 @@
     return Boolean(settings.overlayEnabled && settings.dictionaryDismissGuard?.enabled && settings.dictionaryDismissGuard.triggers?.length);
   }
 
-  function maybeArmDictionaryDismissFromPointer(event, entry) {
-    if (!entry || !dictionaryGuardActive()) return;
-    const match = settings.dictionaryDismissGuard.triggers.find((trigger) => !trigger.code && exactModifierMatch(event, trigger));
-    if (match) armDictionaryDismissShield();
-  }
-
   function handleDictionaryGuardKeyEvent(event) {
     if (event.code === "Escape") {
-      disarmDictionaryDismissShield();
+      clearGuardState();
       return;
     }
     maybeConsumeDictionaryDismissKeyEvent(event);
@@ -516,6 +515,12 @@
       consumeEvent(event);
       return true;
     }
+    if (event.type === "keyup" && guardReleaseMatchesKeyEvent(event)) {
+      overlayState.consumedGuardKeyCodes.delete(event.code);
+      releaseRpgMakerInputState(event);
+      consumeEvent(event);
+      return true;
+    }
     if (!dictionaryGuardActive()) return false;
     const match = settings.dictionaryDismissGuard.triggers.find((trigger) => guardTriggerMatchesKeyEvent(event, trigger));
     if (!match) return false;
@@ -523,9 +528,19 @@
     consumeEvent(event);
     if (event.type === "keydown") {
       overlayState.consumedGuardKeyCodes.add(event.code);
-      armDictionaryDismissShield();
+    }
+    if (event.type === "keyup") {
+      overlayState.consumedGuardKeyCodes.delete(event.code);
     }
     return true;
+  }
+
+  function guardReleaseMatchesKeyEvent(event) {
+    if (!settings.dictionaryDismissGuard?.enabled || !settings.dictionaryDismissGuard.triggers?.length) return false;
+    return settings.dictionaryDismissGuard.triggers.some((trigger) => {
+      if (trigger.code) return event.code === trigger.code;
+      return modifierOnlyTriggerMatchesEventCode(event.code, trigger);
+    });
   }
 
   function guardTriggerMatchesKeyEvent(event, trigger) {
@@ -559,7 +574,6 @@
         if (dictionaryGuardInputShouldBlock(event)) {
           overlayState.consumedGuardKeyCodes.add(event.code);
           releaseRpgMakerInputState(event);
-          armDictionaryDismissShield();
           consumeEvent(event);
           return;
         }
@@ -611,61 +625,8 @@
     );
   }
 
-  function selectionTouchesOverlay() {
-    const selection = window.getSelection?.();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !overlayState.root) return false;
-    for (let index = 0; index < selection.rangeCount; index += 1) {
-      const range = selection.getRangeAt(index);
-      const node = range.commonAncestorContainer;
-      const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-      if (element && overlayState.root.contains(element)) return true;
-    }
-    return false;
-  }
-
-  function armDictionaryDismissShield() {
-    if (!dictionaryGuardActive()) return;
-    ensureDictionaryDismissShield();
-    overlayState.dismissShield.hidden = false;
-    window.clearTimeout(overlayState.dismissShieldTimer);
-    overlayState.dismissShieldTimer = window.setTimeout(disarmDictionaryDismissShield, 10000);
-  }
-
-  function ensureDictionaryDismissShield() {
-    if (overlayState.dismissShield) return;
-    const shield = document.createElement("div");
-    shield.id = "mz-player-dictionary-dismiss-shield";
-    shield.hidden = true;
-    shield.setAttribute("aria-hidden", "true");
-    shield.style.cssText = [
-      "position:fixed",
-      "inset:0",
-      "z-index:2147483646",
-      "background:transparent",
-      "pointer-events:auto"
-    ].join(";");
-
-    const swallow = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
-      if (event.type === "click" || event.type === "auxclick" || event.type === "contextmenu" || event.type === "touchend") {
-        disarmDictionaryDismissShield();
-        postParent({ type: "return-focus" });
-      }
-    };
-
-    for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "auxclick", "contextmenu", "touchstart", "touchend"]) {
-      shield.addEventListener(type, swallow, true);
-    }
-    document.documentElement.appendChild(shield);
-    overlayState.dismissShield = shield;
-  }
-
-  function disarmDictionaryDismissShield() {
-    window.clearTimeout(overlayState.dismissShieldTimer);
-    overlayState.dismissShieldTimer = 0;
-    if (overlayState.dismissShield) overlayState.dismissShield.hidden = true;
+  function clearGuardState() {
+    overlayState.consumedGuardKeyCodes.clear();
   }
 
   function focusGameTarget() {
@@ -710,7 +671,7 @@
     overlayState.root.classList.toggle("mz-player-text-overlay-reader", settings.readerMode);
     if (!active) {
       clearOverlayEntries();
-      disarmDictionaryDismissShield();
+      clearGuardState();
     }
     scheduleFlush();
   }

@@ -36,10 +36,7 @@ export function AboutModal({ onClose }: AboutModalProps) {
             <li>Select a game from the library.</li>
             <li>Use the Overlay for transparent selectable text.</li>
             <li>Enable Show to make overlay text visible.</li>
-            <li>
-              Use Dismiss guard if your dictionary popup needs a safe closing
-              click.
-            </li>
+            <li>Use Guard to stop configured keys from entering the game.</li>
           </ol>
         </div>
 
