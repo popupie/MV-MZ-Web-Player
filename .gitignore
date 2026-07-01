@@ -1,5 +1,6 @@
 node_modules/
 dist/
+public/mz-player-runtime/
 .pnpm-store/
 .DS_Store
 *.tsbuildinfo

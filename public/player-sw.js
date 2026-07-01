@@ -3,6 +3,7 @@ const DB_VERSION = 1;
 const GAME_STORE = "games";
 const FILE_STORE = "files";
 const BLOB_STORE = "blobs";
+const PLAYER_DESKTOP_RUNTIME_VERSION = "desktop-api-1";
 let dbPromise;
 const gameCache = new Map();
 const fileCache = new Map();
@@ -206,6 +207,7 @@ async function getGameFileMap(gameId) {
     lower: new Map(),
     alias: new Map(),
     lowerAlias: new Map(),
+    records,
   };
   for (const record of records) {
     const normalized = normalizePath(record.path);
@@ -229,6 +231,11 @@ async function getStoredFile(gameId, path) {
     map.alias.get(normalized) ||
     map.lowerAlias.get(normalized.toLowerCase())
   );
+}
+
+async function getGameFiles(gameId) {
+  const map = await getGameFileMap(gameId);
+  return map.records || [];
 }
 
 async function getIndexedDbBlob(storageRef) {
@@ -292,20 +299,58 @@ async function serveGameFile(url, request) {
 
   if ((record.mime || "").startsWith("text/html")) {
     const html = await blob.text();
-    return new Response(injectBridge(html, game), { status: 200, headers });
+    const files = await getGameFiles(gameId);
+    return new Response(injectBridge(html, game, files), { status: 200, headers });
   }
 
   return new Response(blob, { status: 200, headers });
 }
 
-function injectBridge(html, game) {
-  const config = `<script>window.__MZ_PLAYER_BRIDGE__=${JSON.stringify({
+function jsonForScript(value) {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+function encodedPath(path) {
+  return normalizePath(path).split("/").map(encodeURIComponent).join("/");
+}
+
+function filenameFromPath(path) {
+  const parts = normalizePath(path).split("/");
+  return parts.at(-1) || path;
+}
+
+function desktopRuntimeConfig(game, files) {
+  const gamePrefix = `/play/${encodeURIComponent(game.id)}/`;
+  return {
+    entryId: game.id,
+    fileRoutePrefix: gamePrefix,
+    files: files.map((file) => ({
+      path: file.path,
+      url: `${gamePrefix}${encodedPath(file.path)}`,
+      size: file.size,
+      mimeType: file.mime || "application/octet-stream",
+      name: filenameFromPath(file.path),
+    })),
+  };
+}
+
+function injectBridge(html, game, files) {
+  const bridgeConfig = `<script>window.__MZ_PLAYER_BRIDGE__=${jsonForScript({
     gameId: game.id,
     settings: game.settings,
-  }).replace(
-    /</g,
-    "\\u003c",
-  )};</script><script src="/runtime-bridge.js"></script>`;
+  })};</script>`;
+  const desktopConfig = `<script>window.__MZ_PLAYER_DESKTOP_CONFIG=${jsonForScript(
+    desktopRuntimeConfig(game, files),
+  )};</script>`;
+  const runtimeScripts = [
+    `<script src="/mz-player-runtime/buffer.js?v=${PLAYER_DESKTOP_RUNTIME_VERSION}"></script>`,
+    `<script src="/mz-player-runtime/desktop.js?v=${PLAYER_DESKTOP_RUNTIME_VERSION}"></script>`,
+    `<script src="/runtime-bridge.js"></script>`,
+  ].join("");
+  const config = `${bridgeConfig}${desktopConfig}${runtimeScripts}`;
 
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${config}`);
