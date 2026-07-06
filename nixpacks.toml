@@ -4,5 +4,10 @@ NIXPACKS_NODE_VERSION = "22"
 [phases.install]
 cmds = [
   "npm install -g $(node -p \"require('./package.json').packageManager\")",
-  "pnpm i --frozen-lockfile"
+  "node $(npm root -g)/pnpm/bin/pnpm.cjs i --frozen-lockfile"
+]
+
+[phases.build]
+cmds = [
+  "node $(npm root -g)/pnpm/bin/pnpm.cjs run build"
 ]
