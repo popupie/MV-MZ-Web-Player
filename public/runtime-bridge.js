@@ -16,8 +16,11 @@
     consumedGuardKeyCodes: new Set(),
     hoveredTextEntry: null,
     raf: 0,
+    lastScene: null,
     installedHooks: false,
     inputGuardInstalled: false,
+    sceneHooksInstalled: false,
+    sceneBaseHooksInstalled: false,
     focusReturnInstalled: false,
     root: null,
     style: null
@@ -420,8 +423,14 @@
           text-shadow: none;
           background: transparent;
           border-radius: 2px;
-          padding: 0 1px;
+          padding: 0;
+          margin: 0;
+          border: 0;
           line-height: 1;
+          letter-spacing: 0;
+          word-spacing: 0;
+          font-kerning: none;
+          font-variant-ligatures: none;
           opacity: 1;
         }
 
@@ -713,6 +722,8 @@
       if (!window.Bitmap || !window.Window_Base || !window.Window || !window.Graphics) return false;
 
       overlayState.installedHooks = true;
+      installSceneHooks();
+
       const bitmapDrawText = Bitmap.prototype.drawText;
       Bitmap.prototype.drawText = function (text, x, y, maxWidth, lineHeight, align) {
         const result = bitmapDrawText.apply(this, arguments);
@@ -753,11 +764,90 @@
         return result;
       };
 
+      const windowDestroy = Window.prototype.destroy;
+      if (typeof windowDestroy === "function") {
+        Window.prototype.destroy = function () {
+          forgetOwner(this);
+          const result = windowDestroy.apply(this, arguments);
+          scheduleFlush();
+          return result;
+        };
+      }
+
       return true;
     };
 
     if (install()) return;
     setTimeout(installRpgMakerOverlayHooks, 250);
+  }
+
+  function installSceneHooks() {
+    installSceneManagerHooks();
+    installSceneBaseHooks();
+  }
+
+  function installSceneManagerHooks() {
+    if (overlayState.sceneHooksInstalled) return;
+
+    const sceneManager = window.SceneManager;
+    if (!sceneManager) {
+      setTimeout(installSceneHooks, 250);
+      return;
+    }
+
+    overlayState.sceneHooksInstalled = true;
+    overlayState.lastScene = sceneManager._scene || null;
+
+    const changeScene = sceneManager.changeScene;
+    if (typeof changeScene === "function") {
+      sceneManager.changeScene = function () {
+        const result = changeScene.apply(this, arguments);
+        handleSceneMaybeChanged(this._scene || null);
+        return result;
+      };
+    }
+
+    const updateScene = sceneManager.updateScene;
+    if (typeof updateScene === "function") {
+      sceneManager.updateScene = function () {
+        const result = updateScene.apply(this, arguments);
+        handleSceneMaybeChanged(this._scene || null);
+        return result;
+      };
+    }
+  }
+
+  function installSceneBaseHooks() {
+    if (overlayState.sceneBaseHooksInstalled) return;
+
+    const sceneBase = window.Scene_Base;
+    const terminate = sceneBase?.prototype?.terminate;
+    if (typeof terminate !== "function") {
+      setTimeout(installSceneBaseHooks, 250);
+      return;
+    }
+
+    overlayState.sceneBaseHooksInstalled = true;
+    sceneBase.prototype.terminate = function () {
+      forgetScene(this);
+      const result = terminate.apply(this, arguments);
+      scheduleFlush();
+      return result;
+    };
+  }
+
+  function handleSceneMaybeChanged(scene) {
+    if (scene === overlayState.lastScene) return;
+
+    overlayState.lastScene = scene || null;
+    pruneInvisibleEntries();
+    scheduleFlush();
+  }
+
+  function pruneInvisibleEntries() {
+    for (const [key, entry] of overlayState.entries) {
+      if (!entryIsVisible(entry)) removeEntry(key, entry);
+    }
   }
 
   function ownerId(owner) {
@@ -802,9 +892,36 @@
     }
   }
 
+  function forgetScene(scene) {
+    for (const [key, entry] of overlayState.entries) {
+      if (ownerBelongsToScene(entry.owner, scene)) removeEntry(key, entry);
+    }
+
+    for (const [key, group] of overlayState.lineGroups) {
+      if (ownerBelongsToScene(group.owner, scene)) overlayState.lineGroups.delete(key);
+    }
+  }
+
+  function forgetOwner(owner) {
+    for (const [key, entry] of overlayState.entries) {
+      if (entry.owner === owner) removeEntry(key, entry);
+    }
+
+    for (const [key, group] of overlayState.lineGroups) {
+      if (group.owner === owner) overlayState.lineGroups.delete(key);
+    }
+  }
+
   function removeEntry(key, entry) {
+    if (entry) forgetLineGroupsForEntry(key);
     if (entry.element) entry.element.remove();
     overlayState.entries.delete(key);
+  }
+
+  function forgetLineGroupsForEntry(entryKey) {
+    for (const [key, group] of overlayState.lineGroups) {
+      if (group.entryKey === entryKey) overlayState.lineGroups.delete(key);
+    }
   }
 
   function clearOverlayEntries() {
@@ -831,6 +948,7 @@
     const measuredWidth = safeMeasure(bitmap, text);
     const adjustedX = adjustedTextLeft(x, widthLimit, measuredWidth, align);
     const normalizedY = Math.round(y);
+    const alignmentBox = alignmentTextBox(x, widthLimit, measuredWidth, align);
 
     if (text.length === 1) {
       captureLineCharacter(owner, bitmap, text, adjustedX, normalizedY, measuredWidth, height);
@@ -839,22 +957,25 @@
 
     const key = [
       ownerId(owner),
-      Math.round(adjustedX),
+      Math.round(alignmentBox.x),
       normalizedY,
-      Math.round(measuredWidth),
+      Math.round(alignmentBox.width),
       Math.round(height),
+      alignmentBox.textAlign,
       hashText(text)
     ].join(":");
 
     upsertEntry(key, {
       owner,
+      bitmap,
       text,
-      x: adjustedX,
+      x: alignmentBox.x,
       y: normalizedY,
-      width: Math.max(measuredWidth, 1),
+      width: alignmentBox.width,
       height,
       fontSize: bitmap.fontSize || owner.standardFontSize?.() || 24,
       fontFace: bitmap.fontFace || owner.standardFontFace?.() || "sans-serif",
+      textAlign: alignmentBox.textAlign,
       updatedAt: performance.now()
     });
   }
@@ -868,6 +989,7 @@
     if (!group || x < group.lastX - Math.max(8, height * 0.35) || now - group.updatedAt > 5000) {
       group = {
         owner,
+        bitmap,
         text: "",
         x,
         y,
@@ -890,6 +1012,7 @@
 
     upsertEntry(group.entryKey, {
       owner: group.owner,
+      bitmap: group.bitmap,
       text: group.text,
       x: group.x,
       y: group.y,
@@ -913,6 +1036,25 @@
     if (align === "center") return x + Math.max(0, (maxWidth - measuredWidth) / 2);
     if (align === "right") return x + Math.max(0, maxWidth - measuredWidth);
     return x;
+  }
+
+  function alignmentTextBox(x, maxWidth, measuredWidth, align) {
+    const widthLimit = Number(maxWidth) || 0;
+    const canUseBox = (align === "center" || align === "right") && widthLimit > 0 && widthLimit < 0xffffffff;
+
+    if (canUseBox) {
+      return {
+        x,
+        width: Math.max(widthLimit, 1),
+        textAlign: align
+      };
+    }
+
+    return {
+      x: adjustedTextLeft(x, maxWidth, measuredWidth, align),
+      width: Math.max(measuredWidth, 1),
+      textAlign: "left"
+    };
   }
 
   function upsertEntry(key, next) {
@@ -988,6 +1130,7 @@
       setStyleIfChanged(entry.element, "height", `${Math.max(1, rect.height)}px`);
       setStyleIfChanged(entry.element, "font", `${Math.max(1, rect.fontSize)}px ${entry.fontFace || "sans-serif"}`);
       setStyleIfChanged(entry.element, "lineHeight", `${Math.max(1, rect.height)}px`);
+      setStyleIfChanged(entry.element, "textAlign", entry.textAlign || "left");
     }
   }
 
@@ -998,8 +1141,29 @@
   function entryIsVisible(entry) {
     const owner = entry.owner;
     if (!owner || owner.destroyed || !owner.parent) return false;
+    if (!ownerBelongsToActiveScene(owner)) return false;
     if (typeof owner.isClosed === "function" && owner.isClosed()) return false;
     return displayObjectIsVisible(owner);
+  }
+
+  function ownerBelongsToActiveScene(owner) {
+    const scene = currentScene();
+    if (!scene) return true;
+    return ownerBelongsToScene(owner, scene);
+  }
+
+  function ownerBelongsToScene(owner, scene) {
+    let current = owner;
+    let guard = 0;
+    while (current && guard++ < 30) {
+      if (current === scene) return true;
+      current = current.parent;
+    }
+    return false;
+  }
+
+  function currentScene() {
+    return window.SceneManager?._scene || overlayState.lastScene || null;
   }
 
   function toPageRect(entry) {
@@ -1012,17 +1176,17 @@
 
     const scaleX = rect.width / (graphics.width || canvas.width || rect.width || 1);
     const scaleY = rect.height / (graphics.height || canvas.height || rect.height || 1);
-    const ownerPos = ownerWorldPosition(entry.owner);
-    const padding = Number(entry.owner.padding) || 0;
-    const originX = entry.owner.origin ? Number(entry.owner.origin.x) || 0 : 0;
-    const originY = entry.owner.origin ? Number(entry.owner.origin.y) || 0 : 0;
-    const visibleWidth = Math.max(0, (Number(entry.owner.width) || Number(entry.owner._width) || 0) - padding * 2);
-    const visibleHeight = Math.max(0, (Number(entry.owner.height) || Number(entry.owner._height) || 0) - padding * 2);
-    const clipped = intersectRects(entry, { x: originX, y: originY, width: visibleWidth, height: visibleHeight });
+    const content = contentGeometry(entry);
+    const clipped = intersectRects(entry, {
+      x: content.originX,
+      y: content.originY,
+      width: content.visibleWidth,
+      height: content.visibleHeight
+    });
     if (!clipped || clipped.width <= 0 || clipped.height <= 0) return null;
 
-    const pageLeft = rect.left + (ownerPos.x + padding - originX + clipped.x) * scaleX;
-    const pageTop = rect.top + (ownerPos.y + padding - originY + clipped.y) * scaleY;
+    const pageLeft = rect.left + (content.x - content.originX + clipped.x) * scaleX;
+    const pageTop = rect.top + (content.y - content.originY + clipped.y) * scaleY;
     const pageWidth = clipped.width * scaleX;
     const pageHeight = clipped.height * scaleY;
 
@@ -1034,6 +1198,57 @@
       width: roundCssPixel(pageWidth),
       height: roundCssPixel(pageHeight),
       fontSize: roundCssPixel((entry.fontSize || entry.height || 24) * Math.min(scaleX, scaleY))
+    };
+  }
+
+  function contentGeometry(entry) {
+    const owner = entry.owner;
+    const sprite = contentSpriteFor(owner, entry.bitmap);
+    if (sprite) {
+      const position = ownerWorldPosition(sprite);
+      const frame = spriteFrame(sprite);
+      return {
+        x: position.x,
+        y: position.y,
+        originX: frame.x,
+        originY: frame.y,
+        visibleWidth: frame.width,
+        visibleHeight: frame.height
+      };
+    }
+
+    const ownerPos = ownerWorldPosition(owner);
+    const padding = Number(owner.padding) || 0;
+    const originX = owner.origin ? Number(owner.origin.x) || 0 : 0;
+    const originY = owner.origin ? Number(owner.origin.y) || 0 : 0;
+    return {
+      x: ownerPos.x + padding,
+      y: ownerPos.y + padding,
+      originX,
+      originY,
+      visibleWidth: Math.max(0, (Number(owner.width) || Number(owner._width) || 0) - padding * 2),
+      visibleHeight: Math.max(0, (Number(owner.height) || Number(owner._height) || 0) - padding * 2)
+    };
+  }
+
+  function contentSpriteFor(owner, bitmap) {
+    const candidates = [
+      owner && owner._windowContentsSprite,
+      owner && owner._contentsSprite
+    ];
+    const matching = candidates.find((sprite) => sprite && sprite.bitmap === bitmap);
+    return matching || candidates.find(Boolean) || null;
+  }
+
+  function spriteFrame(sprite) {
+    const frame = sprite && (sprite._frame || sprite._realFrame);
+    const width = Number(frame && frame.width) || Number(sprite.width) || 0;
+    const height = Number(frame && frame.height) || Number(sprite.height) || 0;
+    return {
+      x: Number(frame && frame.x) || 0,
+      y: Number(frame && frame.y) || 0,
+      width: Math.max(0, width),
+      height: Math.max(0, height)
     };
   }
 
