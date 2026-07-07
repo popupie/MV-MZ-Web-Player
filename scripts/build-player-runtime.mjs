@@ -54,6 +54,23 @@ async function buildRuntime(entryName) {
   });
 }
 
+async function buildRuntimeBridge() {
+  await build({
+    banner: {
+      js: "/* Generated from player-runtime/bridge/*.ts by scripts/build-player-runtime.mjs. */",
+    },
+    bundle: true,
+    entryPoints: [resolve(root, "player-runtime/bridge/index.ts")],
+    format: "iife",
+    logLevel: "info",
+    minify: false,
+    outfile: resolve(root, "public/runtime-bridge.js"),
+    platform: "browser",
+    target: ["es2020"],
+  });
+}
+
 await mkdir(outdir, { recursive: true });
 await buildRuntime("buffer");
 await buildRuntime("desktop");
+await buildRuntimeBridge();

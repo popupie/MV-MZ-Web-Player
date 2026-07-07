@@ -4,6 +4,7 @@ import { LibraryPanel } from "./components/LibraryPanel";
 import { PlayerPanel } from "./components/PlayerPanel";
 import { useGameLibrary } from "./hooks/useGameLibrary";
 import { usePlayerFrame } from "./hooks/usePlayerFrame";
+import { useTextLog } from "./hooks/useTextLog";
 import { chordFromEvent, sameChord } from "./lib/keyChords";
 import { reservedKeyForEvent } from "./lib/keys";
 import { defaultDictionaryDismissGuard, dictionaryGuardFor, overlayTogglePatch, showTogglePatch } from "./lib/playerSettings";
@@ -14,8 +15,6 @@ const serviceTitle = "MV/MZ Web Player";
 
 export default function App() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
-  const [textLogs, setTextLogs] = useState<string[]>([]);
-  const [logsOpen, setLogsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [recordingGuardTrigger, setRecordingGuardTrigger] = useState(false);
   const directoryInputRef = useRef<HTMLInputElement>(null);
@@ -23,6 +22,13 @@ export default function App() {
 
   const library = useGameLibrary(() => setRuntimeError(null));
   const player = usePlayerFrame(library.activeGame?.id);
+  const {
+    append: appendTextLogEntry,
+    logsOpen,
+    reset: resetTextLog,
+    setLogsOpen,
+    textLogs,
+  } = useTextLog(textLogLimit);
   const activeDictionaryGuard = library.activeGame ? dictionaryGuardFor(library.activeGame) : defaultDictionaryDismissGuard;
   const quotaPercent = library.storage?.quota && library.storage.usage ? Math.min(100, Math.round((library.storage.usage / library.storage.quota) * 100)) : 0;
 
@@ -37,11 +43,7 @@ export default function App() {
         void player.focusPlayer();
       }
       if (message.type === "text-log" && message.gameId === library.activeGame?.id) {
-        setTextLogs((items) => {
-          const text = message.text.trim();
-          if (!text || items.includes(text)) return items;
-          return [...items, text].slice(-textLogLimit);
-        });
+        appendTextLogEntry(message.text);
       }
       if (message.type === "runtime-error") {
         setRuntimeError(message.message);
@@ -56,9 +58,9 @@ export default function App() {
   });
 
   useEffect(() => {
-    setTextLogs([]);
+    resetTextLog();
     setRecordingGuardTrigger(false);
-  }, [library.activeGame?.id]);
+  }, [library.activeGame?.id, resetTextLog]);
 
   useEffect(() => {
     document.title = library.activeGame ? `${library.activeGame.title} | ${serviceTitle}` : serviceTitle;

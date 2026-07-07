@@ -1,4 +1,4 @@
-const githubUrl = "https://github.com/popupie/MV-MZ-Browser-Player";
+const githubUrl = "https://github.com/popupie/mv-mz-browser-player";
 
 interface AboutModalProps {
   onClose: () => void;
@@ -32,7 +32,10 @@ export function AboutModal({ onClose }: AboutModalProps) {
         <div className="modal-section">
           <h3>How to Use</h3>
           <ol>
-            <li>Import a web export folder or ZIP that contains game <code>index.html</code>.</li>
+            <li>
+              Import a web export folder or ZIP that contains game{" "}
+              <code>index.html</code>.
+            </li>
             <li>Select a game from the library.</li>
             <li>Use the Overlay for transparent selectable text.</li>
             <li>Enable Show to make overlay text visible.</li>

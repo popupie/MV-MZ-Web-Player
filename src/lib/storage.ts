@@ -1,6 +1,6 @@
 import { detectMime } from "./mime";
 import { normalizeStoredPath } from "./paths";
-import type { GameRecord, StoredGameFile, StorageKind } from "./types";
+import type { GameRecord, StoredGameFile } from "./types";
 
 const DB_NAME = "mvmz-browser-player";
 const DB_VERSION = 1;
@@ -127,17 +127,6 @@ export async function deleteGame(gameId: string): Promise<void> {
   await removeOpfsGame(gameId);
 }
 
-export async function putStoredFile(record: StoredGameFile): Promise<void> {
-  const db = await openPlayerDb();
-  try {
-    const transaction = db.transaction(FILE_STORE, "readwrite");
-    transaction.objectStore(FILE_STORE).put({ ...record, key: fileKey(record.gameId, record.path) });
-    await transactionDone(transaction);
-  } finally {
-    db.close();
-  }
-}
-
 export async function putStoredFiles(records: StoredGameFile[]): Promise<void> {
   if (records.length === 0) return;
 
@@ -152,37 +141,6 @@ export async function putStoredFiles(records: StoredGameFile[]): Promise<void> {
   } finally {
     db.close();
   }
-}
-
-export async function putIndexedDbBlob(gameId: string, path: string, blob: Blob): Promise<StoredGameFile> {
-  const normalizedPath = normalizeStoredPath(path);
-  const key = fileKey(gameId, normalizedPath);
-  const db = await openPlayerDb();
-  try {
-    const transaction = db.transaction([BLOB_STORE, FILE_STORE], "readwrite");
-    transaction.objectStore(BLOB_STORE).put({ key, blob } satisfies StoredBlobRecord);
-    transaction.objectStore(FILE_STORE).put({
-      key,
-      gameId,
-      path: normalizedPath,
-      size: blob.size,
-      mime: detectMime(normalizedPath),
-      storageRef: key,
-      storageKind: "indexeddb" satisfies StorageKind
-    });
-    await transactionDone(transaction);
-  } finally {
-    db.close();
-  }
-
-  return {
-    gameId,
-    path: normalizedPath,
-    size: blob.size,
-    mime: detectMime(normalizedPath),
-    storageRef: key,
-    storageKind: "indexeddb"
-  };
 }
 
 export async function putIndexedDbBlobs(records: Array<{ gameId: string; path: string; blob: Blob }>): Promise<StoredGameFile[]> {
@@ -266,19 +224,6 @@ async function getOpfsGameDir(gameId: string, create: boolean): Promise<BrowserF
   return gamesDir.getDirectoryHandle(gameId, { create });
 }
 
-async function getOpfsParentDir(gameId: string, path: string): Promise<{ dir: BrowserFileSystemDirectoryHandle; name: string }> {
-  const parts = normalizeStoredPath(path).split("/");
-  const name = parts.pop();
-  if (!name) throw new Error("Invalid file path.");
-
-  let dir = await getOpfsGameDir(gameId, true);
-  for (const part of parts) {
-    dir = await dir.getDirectoryHandle(part, { create: true });
-  }
-
-  return { dir, name };
-}
-
 export async function createOpfsWriter(gameId: string): Promise<{
   putFile(path: string, blob: Blob): Promise<StoredGameFile>;
 }> {
@@ -319,26 +264,6 @@ export async function createOpfsWriter(gameId: string): Promise<{
       };
     }
   };
-}
-
-export async function putOpfsFile(gameId: string, path: string, blob: Blob): Promise<StoredGameFile> {
-  const normalizedPath = normalizeStoredPath(path);
-  const { dir, name } = await getOpfsParentDir(gameId, normalizedPath);
-  const handle = await dir.getFileHandle(name, { create: true });
-  const writable = await handle.createWritable();
-  await writable.write(blob);
-  await writable.close();
-
-  const record: StoredGameFile = {
-    gameId,
-    path: normalizedPath,
-    size: blob.size,
-    mime: detectMime(normalizedPath),
-    storageRef: `games/${gameId}/${normalizedPath}`,
-    storageKind: "opfs"
-  };
-  await putStoredFile(record);
-  return record;
 }
 
 export async function getOpfsBlob(gameId: string, path: string): Promise<Blob | undefined> {
