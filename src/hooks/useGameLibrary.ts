@@ -1,9 +1,22 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { candidateFromDirectoryHandle, candidateFromFolder, candidateFromZip, importCandidate, importLocalFolderCandidate } from "../lib/importer";
+import {
+  candidateFromDirectoryHandle,
+  candidateFromFolder,
+  candidateFromZip,
+  importCandidate,
+  importLocalFolderCandidate,
+} from "../lib/importer";
 import { normalizePlayerSettings } from "../lib/playerSettings";
 import { downloadSaveZip } from "../lib/saveExport";
 import { registerPlayerServiceWorker } from "../lib/serviceWorker";
-import { deleteGame, estimateStorage, getAllGames, getLocalFolderHandle, updateGameSettings, type BrowserFileSystemDirectoryHandle } from "../lib/storage";
+import {
+  deleteGame,
+  estimateStorage,
+  getAllGames,
+  getLocalFolderHandle,
+  updateGameSettings,
+  type BrowserFileSystemDirectoryHandle,
+} from "../lib/storage";
 import type { GameRecord, ImportCandidate, ImportProgress } from "../lib/types";
 
 export const idleProgress: ImportProgress = {
@@ -14,8 +27,12 @@ export const idleProgress: ImportProgress = {
 };
 
 type ImportCandidateReader = () => Promise<ImportCandidate>;
+type BrowserStorageImportSource = "folder" | "zip";
 type WindowWithDirectoryPicker = Window & {
-  showDirectoryPicker?: (options?: { id?: string; mode?: "read" | "readwrite" }) => Promise<BrowserFileSystemDirectoryHandle>;
+  showDirectoryPicker?: (options?: {
+    id?: string;
+    mode?: "read" | "readwrite";
+  }) => Promise<BrowserFileSystemDirectoryHandle>;
 };
 
 function clearServiceWorkerGameCache(gameId: string) {
@@ -26,13 +43,22 @@ function clearServiceWorkerGameCache(gameId: string) {
 }
 
 function supportsLocalFolderAccess(): boolean {
-  return typeof window !== "undefined" && typeof (window as WindowWithDirectoryPicker).showDirectoryPicker === "function";
+  return (
+    typeof window !== "undefined" &&
+    typeof (window as WindowWithDirectoryPicker).showDirectoryPicker ===
+      "function"
+  );
 }
 
 function localFolderAccessError(): string | undefined {
-  if (typeof window === "undefined") return "Folder access is not available in this browser.";
-  if (!window.isSecureContext) return "Folder access requires HTTPS, localhost, or 127.0.0.1. Import a ZIP instead.";
-  if (typeof (window as WindowWithDirectoryPicker).showDirectoryPicker !== "function") {
+  if (typeof window === "undefined")
+    return "Folder access is not available in this browser.";
+  if (!window.isSecureContext)
+    return "Folder access requires HTTPS, localhost, or 127.0.0.1. Import a ZIP instead.";
+  if (
+    typeof (window as WindowWithDirectoryPicker).showDirectoryPicker !==
+    "function"
+  ) {
     return "Folder access is not available. Import a ZIP instead.";
   }
   return undefined;
@@ -52,7 +78,9 @@ async function requestLocalFolderPermission(gameId: string): Promise<boolean> {
   const handle = await getLocalFolderHandle(gameId);
   if (!handle) return false;
 
-  const current = handle.queryPermission ? await handle.queryPermission({ mode: "read" }) : "granted";
+  const current = handle.queryPermission
+    ? await handle.queryPermission({ mode: "read" })
+    : "granted";
   if (current === "granted") return true;
   if (current === "denied" || !handle.requestPermission) return false;
 
@@ -61,15 +89,24 @@ async function requestLocalFolderPermission(gameId: string): Promise<boolean> {
 
 async function availableBrowserStorage(): Promise<number | undefined> {
   const estimate = await estimateStorage();
-  if (typeof estimate?.quota !== "number" || typeof estimate.usage !== "number") return undefined;
+  if (typeof estimate?.quota !== "number" || typeof estimate.usage !== "number")
+    return undefined;
   return Math.max(0, estimate.quota - estimate.usage);
 }
 
-async function browserStorageError(requiredBytes: number): Promise<string | undefined> {
+async function browserStorageError(
+  requiredBytes: number,
+  source: BrowserStorageImportSource,
+): Promise<string | undefined> {
   const availableBytes = await availableBrowserStorage();
-  if (availableBytes === undefined || requiredBytes <= availableBytes) return undefined;
+  if (availableBytes === undefined || requiredBytes <= availableBytes)
+    return undefined;
 
-  return `This ZIP is too big for browser storage. Extract it and import the folder instead.`;
+  if (source === "folder") {
+    return "Folder is too big to upload.";
+  }
+
+  return "ZIP is too big. Extract it and import the folder instead.";
 }
 
 export function useGameLibrary(onImportStart?: () => void) {
@@ -79,7 +116,10 @@ export function useGameLibrary(onImportStart?: () => void) {
   const [error, setError] = useState<string | null>(null);
   const [storage, setStorage] = useState<StorageEstimate | undefined>();
 
-  const activeGame = useMemo(() => games.find((game) => game.id === activeGameId), [activeGameId, games]);
+  const activeGame = useMemo(
+    () => games.find((game) => game.id === activeGameId),
+    [activeGameId, games],
+  );
 
   useEffect(() => {
     void boot();
@@ -91,7 +131,11 @@ export function useGameLibrary(onImportStart?: () => void) {
       await registerPlayerServiceWorker();
       await refreshGames();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not start the browser player.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not start the browser player.",
+      );
     }
   }
 
@@ -116,7 +160,7 @@ export function useGameLibrary(onImportStart?: () => void) {
     }
 
     try {
-      await runImport(async () => candidateFromFolder(files));
+      await runImport(async () => candidateFromFolder(files), "folder");
     } finally {
       event.target.value = "";
     }
@@ -133,11 +177,25 @@ export function useGameLibrary(onImportStart?: () => void) {
     onImportStart?.();
     try {
       const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
-      if (!picker) throw new Error("This browser cannot read folders directly.");
+      if (!picker)
+        throw new Error("This browser cannot read folders directly.");
 
-      setProgress({ phase: "reading", label: "Choose a folder", completed: 0, total: 1 });
-      const handle = await picker.call(window, { id: "game-folder", mode: "read" });
-      setProgress({ phase: "reading", label: "Scanning folder", completed: 0, total: 1 });
+      setProgress({
+        phase: "reading",
+        label: "Choose a folder",
+        completed: 0,
+        total: 1,
+      });
+      const handle = await picker.call(window, {
+        id: "game-folder",
+        mode: "read",
+      });
+      setProgress({
+        phase: "reading",
+        label: "Scanning folder",
+        completed: 0,
+        total: 1,
+      });
       await waitForNextPaint();
       const candidate = await candidateFromDirectoryHandle(handle, setProgress);
       const game = await importLocalFolderCandidate(candidate, setProgress);
@@ -158,7 +216,7 @@ export function useGameLibrary(onImportStart?: () => void) {
       return;
     }
 
-    const compressedStorageError = await browserStorageError(file.size);
+    const compressedStorageError = await browserStorageError(file.size, "zip");
     if (compressedStorageError) {
       event.target.value = "";
       setError(compressedStorageError);
@@ -166,27 +224,43 @@ export function useGameLibrary(onImportStart?: () => void) {
     }
 
     try {
-      await runImport(async () => candidateFromZip(file, setProgress));
+      await runImport(async () => candidateFromZip(file, setProgress), "zip");
     } finally {
       event.target.value = "";
     }
   }
 
-  async function runImport(readCandidate: ImportCandidateReader) {
+  async function runImport(
+    readCandidate: ImportCandidateReader,
+    source: BrowserStorageImportSource,
+  ) {
     setError(null);
     onImportStart?.();
     try {
-      setProgress({ phase: "reading", label: "Reading files", completed: 0, total: 1 });
+      setProgress({
+        phase: "reading",
+        label: "Reading files",
+        completed: 0,
+        total: 1,
+      });
       await waitForNextPaint();
       const candidate = await readCandidate();
-      const storageError = await browserStorageError(candidate.totalBytes);
+      const storageError = await browserStorageError(
+        candidate.totalBytes,
+        source,
+      );
       if (storageError) throw new Error(storageError);
       const game = await importCandidate(candidate, setProgress);
       clearServiceWorkerGameCache(game.id);
       await refreshGames(game.id);
       setProgress(idleProgress);
     } catch (cause) {
-      setProgress({ phase: "error", label: "Import failed", completed: 0, total: 0 });
+      setProgress({
+        phase: "error",
+        label: "Import failed",
+        completed: 0,
+        total: 0,
+      });
       setError(cause instanceof Error ? cause.message : "Import failed.");
     }
   }
@@ -231,17 +305,24 @@ export function useGameLibrary(onImportStart?: () => void) {
     try {
       await downloadSaveZip(game);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Save download failed.");
+      setError(
+        cause instanceof Error ? cause.message : "Save download failed.",
+      );
     }
   }
 
-  async function saveGameSettings(game: GameRecord, patch: Partial<GameRecord["settings"]>): Promise<GameRecord> {
+  async function saveGameSettings(
+    game: GameRecord,
+    patch: Partial<GameRecord["settings"]>,
+  ): Promise<GameRecord> {
     const updated: GameRecord = {
       ...game,
       settings: normalizePlayerSettings({ ...game.settings, ...patch }),
       updatedAt: new Date().toISOString(),
     };
-    setGames((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+    setGames((items) =>
+      items.map((item) => (item.id === updated.id ? updated : item)),
+    );
     await updateGameSettings(updated);
     clearServiceWorkerGameCache(updated.id);
     return updated;
