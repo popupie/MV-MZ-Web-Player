@@ -1,8 +1,8 @@
 # MV/MZ Web Player
 
 MV/MZ Web Player is a browser player for local RPG Maker MV and MZ web exports.
-You can import a game folder or ZIP file, keep it in browser storage, and play it
-without uploading the game files to a server.
+You can open a local game folder or import a ZIP, then play without uploading
+game files to a server.
 
 ## Demo
 
@@ -20,16 +20,17 @@ project and is not included with this app.
 ## App Flow
 
 1. Open the app in your browser.
-2. Import an RPG Maker MV or MZ web export folder, or import a ZIP file.
-3. Wait while the app reads the files and stores them in the browser.
-4. Select the game from the library.
-5. Play the game in the player area.
-6. Use Focus if the game does not receive keyboard input.
-7. Use Fullscreen when you want a larger play view.
-8. Use Overlay to collect game text in a readable text log.
-9. Use Show to make overlay text visible on top of the game.
-10. Use Guard to stop chosen keys from going into the game.
-11. Download saves from the library when you want to export save data.
+2. Open a folder for a large game, or import a ZIP for a smaller portable game.
+3. Make sure the folder or ZIP contains game `index.html`.
+4. Wait while the app scans the folder or imports the ZIP.
+5. Select the game from the library.
+6. Play the game in the player area.
+7. Use Focus if the game does not receive keyboard input.
+8. Use Fullscreen when you want a larger play view.
+9. Use Overlay to collect game text in a readable text log.
+10. Use Show to make overlay text visible on top of the game.
+11. Use Guard to stop chosen keys from going into the game.
+12. Download saves from the library when you want to export save data.
 
 ## Web Export Examples
 
@@ -59,8 +60,6 @@ GameFolder/
   audio/
   data/
 ```
-
-Import the folder or ZIP that contains game `index.html`.
 
 ## Local Setup
 
@@ -97,8 +96,7 @@ pnpm run preview
 ## Privacy
 
 The app is built for your own local game files. This project does not provide
-game files. Imported files stay in your browser storage. They are not stored by
-this project, and they are not uploaded by this app.
+game files. Nothing is uploaded by this app or stored on a server.
 
 This is a backendless static web app. It does not need a server database or user
 accounts.

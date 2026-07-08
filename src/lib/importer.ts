@@ -2,12 +2,34 @@ import JSZip from "jszip";
 import { defaultPlayerSettings } from "./defaults";
 import { detectMime } from "./mime";
 import { findEntryPath, normalizeStoredPath, stripCommonWrapper, titleFromEntry } from "./paths";
-import { createOpfsWriter, putGame, putIndexedDbBlobs, putStoredFiles, supportsOpfs } from "./storage";
+import {
+  createOpfsWriter,
+  putGame,
+  putIndexedDbBlobs,
+  putLocalFolderHandle,
+  putStoredFiles,
+  supportsOpfs,
+  type BrowserFileSystemDirectoryHandle,
+  type BrowserFileSystemFileHandle,
+} from "./storage";
 import type { GameRecord, ImportCandidate, ImportProgress } from "./types";
 
 type ProgressCallback = (progress: ImportProgress) => void;
 const PROGRESS_FILE_STEP = 25;
 const IDB_BATCH_SIZE = 100;
+
+interface LocalFolderCandidate {
+  title: string;
+  files: Array<{ path: string; sourcePath: string; size: number; mime: string }>;
+  entryPath: string;
+  totalBytes: number;
+  directoryHandle: BrowserFileSystemDirectoryHandle;
+}
+
+type LocalFolderFileHandleEntry = {
+  path: string;
+  handle: BrowserFileSystemFileHandle;
+};
 
 function zipNameBytes(bytes: string[] | Uint8Array | Buffer): Uint8Array {
   if (bytes instanceof Uint8Array) return bytes;
@@ -27,6 +49,10 @@ function shouldReportProgress(index: number, total: number, lastReportTime: numb
   return index === total || index % PROGRESS_FILE_STEP === 0 || performance.now() - lastReportTime > 160;
 }
 
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
 export async function candidateFromFolder(files: FileList | File[]): Promise<ImportCandidate> {
   const entries = Array.from(files)
     .map((file) => ({
@@ -43,6 +69,86 @@ export async function candidateFromFolder(files: FileList | File[]): Promise<Imp
     files: normalized,
     entryPath: findEntryPath(paths),
     totalBytes: normalized.reduce((sum, entry) => sum + entry.file.size, 0)
+  };
+}
+
+function isFileHandle(
+  handle: BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle
+): handle is BrowserFileSystemFileHandle {
+  return handle.kind === "file" || "getFile" in handle;
+}
+
+function isDirectoryHandle(
+  handle: BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle
+): handle is BrowserFileSystemDirectoryHandle {
+  return handle.kind === "directory" || "entries" in handle;
+}
+
+export async function candidateFromDirectoryHandle(
+  directoryHandle: BrowserFileSystemDirectoryHandle,
+  onProgress?: ProgressCallback
+): Promise<LocalFolderCandidate> {
+  if (!directoryHandle.entries) {
+    throw new Error("This browser cannot read folders directly.");
+  }
+
+  const fileEntries: LocalFolderFileHandleEntry[] = [];
+  let lastReportTime = performance.now();
+  let lastScanReportTime = performance.now();
+
+  async function scanDirectory(handle: BrowserFileSystemDirectoryHandle, prefix: string) {
+    if (!handle.entries) return;
+
+    for await (const [name, entryHandle] of handle.entries()) {
+      const path = normalizeStoredPath(prefix ? `${prefix}/${name}` : name);
+      if (!path) continue;
+
+      if (isFileHandle(entryHandle)) {
+        fileEntries.push({ path, handle: entryHandle });
+        if (shouldReportProgress(fileEntries.length, Number.MAX_SAFE_INTEGER, lastScanReportTime)) {
+          lastScanReportTime = performance.now();
+          onProgress?.({ phase: "reading", label: "Scanning folder", completed: 0, total: 1 });
+          await yieldToBrowser();
+        }
+        continue;
+      }
+
+      if (isDirectoryHandle(entryHandle)) {
+        await scanDirectory(entryHandle, path);
+      }
+    }
+  }
+
+  await scanDirectory(directoryHandle, "");
+  onProgress?.({ phase: "reading", label: "Reading folder", completed: 0, total: fileEntries.length });
+
+  const entries: LocalFolderCandidate["files"] = [];
+  for (let index = 0; index < fileEntries.length; index += 1) {
+    const entry = fileEntries[index];
+    const file = await entry.handle.getFile();
+    entries.push({
+      path: entry.path,
+      sourcePath: entry.path,
+      size: file.size,
+      mime: detectMime(entry.path),
+    });
+
+    if (shouldReportProgress(index + 1, fileEntries.length, lastReportTime)) {
+      lastReportTime = performance.now();
+      onProgress?.({ phase: "reading", label: "Reading folder", completed: index + 1, total: fileEntries.length });
+    }
+  }
+
+  const normalized = stripCommonWrapper(entries);
+  const paths = normalized.map((entry) => entry.path);
+  const totalBytes = normalized.reduce((sum, entry) => sum + entry.size, 0);
+
+  return {
+    title: titleFromEntry(entries.map((entry) => entry.path), directoryHandle.name ?? "Imported Game"),
+    files: normalized,
+    entryPath: findEntryPath(paths),
+    totalBytes,
+    directoryHandle,
   };
 }
 
@@ -126,10 +232,49 @@ export async function importCandidate(candidate: ImportCandidate, onProgress?: P
     entryPath: candidate.entryPath,
     fileCount: candidate.files.length,
     totalBytes,
+    sourceKind: "stored",
     settings: defaultPlayerSettings()
   };
 
   await putGame(game);
   onProgress?.({ phase: "done", label: "Imported", completed: candidate.files.length, total: candidate.files.length });
+  return game;
+}
+
+export async function importLocalFolderCandidate(
+  candidate: LocalFolderCandidate,
+  onProgress?: ProgressCallback
+): Promise<GameRecord> {
+  const gameId = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  onProgress?.({ phase: "storing", label: "Saving folder link", completed: 0, total: candidate.files.length });
+
+  await putLocalFolderHandle(gameId, candidate.directoryHandle);
+  await putStoredFiles(
+    candidate.files.map((entry) => ({
+      gameId,
+      path: normalizeStoredPath(entry.path),
+      size: entry.size,
+      mime: entry.mime,
+      storageRef: normalizeStoredPath(entry.sourcePath),
+      storageKind: "local-folder",
+    }))
+  );
+
+  const game: GameRecord = {
+    id: gameId,
+    title: candidate.title,
+    createdAt: now,
+    updatedAt: now,
+    entryPath: candidate.entryPath,
+    fileCount: candidate.files.length,
+    totalBytes: candidate.totalBytes,
+    sourceKind: "local-folder",
+    settings: defaultPlayerSettings(),
+  };
+
+  await putGame(game);
+  onProgress?.({ phase: "done", label: "Folder linked", completed: candidate.files.length, total: candidate.files.length });
   return game;
 }

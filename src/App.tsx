@@ -160,6 +160,13 @@ export default function App() {
         error={library.error}
         games={library.games}
         downloadSaves={(game) => void library.downloadSaves(game)}
+        openFolder={() => {
+          if (library.canUseLocalFolderAccess) {
+            void library.openLocalFolder();
+            return;
+          }
+          directoryInputRef.current?.click();
+        }}
         importFolder={library.importFolder}
         importZip={library.importZip}
         progress={library.progress}

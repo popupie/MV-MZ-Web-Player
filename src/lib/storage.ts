@@ -3,18 +3,30 @@ import { normalizeStoredPath } from "./paths";
 import type { GameRecord, StoredGameFile } from "./types";
 
 const DB_NAME = "mvmz-browser-player";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const GAME_STORE = "games";
 const FILE_STORE = "files";
 const BLOB_STORE = "blobs";
+const HANDLE_STORE = "handles";
+const DELETE_GAME_STORES = [GAME_STORE, FILE_STORE, BLOB_STORE, HANDLE_STORE] as const;
 
-type BrowserFileSystemDirectoryHandle = {
+export type BrowserFileSystemPermissionMode = "read" | "readwrite";
+export type BrowserFileSystemPermissionState = "granted" | "denied" | "prompt";
+
+export type BrowserFileSystemDirectoryHandle = {
+  kind?: "directory";
+  name?: string;
+  entries?: () => AsyncIterableIterator<[string, BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle]>;
   getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemDirectoryHandle>;
   getFileHandle(name: string, options?: { create?: boolean }): Promise<BrowserFileSystemFileHandle>;
   removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
+  queryPermission?: (descriptor?: { mode?: BrowserFileSystemPermissionMode }) => Promise<BrowserFileSystemPermissionState>;
+  requestPermission?: (descriptor?: { mode?: BrowserFileSystemPermissionMode }) => Promise<BrowserFileSystemPermissionState>;
 };
 
-type BrowserFileSystemFileHandle = {
+export type BrowserFileSystemFileHandle = {
+  kind?: "file";
+  name?: string;
   getFile(): Promise<File>;
   createWritable(): Promise<{
     write(data: Blob): Promise<void>;
@@ -27,8 +39,24 @@ type StoredBlobRecord = {
   blob: Blob;
 };
 
+type LocalFolderHandleRecord = {
+  gameId: string;
+  handle: BrowserFileSystemDirectoryHandle;
+};
+
 export function fileKey(gameId: string, path: string): string {
   return `${gameId}\n${normalizeStoredPath(path)}`;
+}
+
+export function normalizeGameRecord(game: GameRecord): GameRecord {
+  return {
+    ...game,
+    sourceKind: game.sourceKind ?? "stored",
+  };
+}
+
+export function gameStoreNamesDeletedWithGame(): readonly string[] {
+  return DELETE_GAME_STORES;
 }
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
@@ -61,6 +89,9 @@ export async function openPlayerDb(): Promise<IDBDatabase> {
     if (!db.objectStoreNames.contains(BLOB_STORE)) {
       db.createObjectStore(BLOB_STORE, { keyPath: "key" });
     }
+    if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+      db.createObjectStore(HANDLE_STORE, { keyPath: "gameId" });
+    }
   };
 
   return requestToPromise(request);
@@ -71,7 +102,7 @@ export async function getAllGames(): Promise<GameRecord[]> {
   try {
     const transaction = db.transaction(GAME_STORE, "readonly");
     const games = await requestToPromise<GameRecord[]>(transaction.objectStore(GAME_STORE).getAll());
-    return games.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return games.map(normalizeGameRecord).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   } finally {
     db.close();
   }
@@ -81,7 +112,8 @@ export async function getGame(gameId: string): Promise<GameRecord | undefined> {
   const db = await openPlayerDb();
   try {
     const transaction = db.transaction(GAME_STORE, "readonly");
-    return await requestToPromise<GameRecord | undefined>(transaction.objectStore(GAME_STORE).get(gameId));
+    const game = await requestToPromise<GameRecord | undefined>(transaction.objectStore(GAME_STORE).get(gameId));
+    return game ? normalizeGameRecord(game) : undefined;
   } finally {
     db.close();
   }
@@ -91,7 +123,7 @@ export async function putGame(game: GameRecord): Promise<void> {
   const db = await openPlayerDb();
   try {
     const transaction = db.transaction(GAME_STORE, "readwrite");
-    transaction.objectStore(GAME_STORE).put(game);
+    transaction.objectStore(GAME_STORE).put(normalizeGameRecord(game));
     await transactionDone(transaction);
   } finally {
     db.close();
@@ -105,8 +137,9 @@ export async function updateGameSettings(game: GameRecord): Promise<void> {
 export async function deleteGame(gameId: string): Promise<void> {
   const db = await openPlayerDb();
   try {
-    const transaction = db.transaction([GAME_STORE, FILE_STORE, BLOB_STORE], "readwrite");
+    const transaction = db.transaction([...DELETE_GAME_STORES], "readwrite");
     transaction.objectStore(GAME_STORE).delete(gameId);
+    transaction.objectStore(HANDLE_STORE).delete(gameId);
 
     const fileIndex = transaction.objectStore(FILE_STORE).index("gameId");
     const fileRequest = fileIndex.openCursor(IDBKeyRange.only(gameId));
@@ -125,6 +158,30 @@ export async function deleteGame(gameId: string): Promise<void> {
   }
 
   await removeOpfsGame(gameId);
+}
+
+export async function putLocalFolderHandle(gameId: string, handle: BrowserFileSystemDirectoryHandle): Promise<void> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(HANDLE_STORE, "readwrite");
+    transaction.objectStore(HANDLE_STORE).put({ gameId, handle } satisfies LocalFolderHandleRecord);
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+export async function getLocalFolderHandle(gameId: string): Promise<BrowserFileSystemDirectoryHandle | undefined> {
+  const db = await openPlayerDb();
+  try {
+    const transaction = db.transaction(HANDLE_STORE, "readonly");
+    const record = await requestToPromise<LocalFolderHandleRecord | undefined>(
+      transaction.objectStore(HANDLE_STORE).get(gameId)
+    );
+    return record?.handle;
+  } finally {
+    db.close();
+  }
 }
 
 export async function putStoredFiles(records: StoredGameFile[]): Promise<void> {

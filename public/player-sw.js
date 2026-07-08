@@ -1,8 +1,9 @@
 const DB_NAME = "mvmz-browser-player";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const GAME_STORE = "games";
 const FILE_STORE = "files";
 const BLOB_STORE = "blobs";
+const HANDLE_STORE = "handles";
 const PLAYER_DESKTOP_RUNTIME_VERSION = "desktop-api-1";
 let dbPromise;
 const gameCache = new Map();
@@ -55,6 +56,8 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains(BLOB_STORE))
         db.createObjectStore(BLOB_STORE, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(HANDLE_STORE))
+        db.createObjectStore(HANDLE_STORE, { keyPath: "gameId" });
     };
     request.onsuccess = () => {
       const db = request.result;
@@ -186,8 +189,9 @@ async function getGame(gameId) {
   const game = await requestToPromise(
     db.transaction(GAME_STORE, "readonly").objectStore(GAME_STORE).get(gameId),
   );
-  gameCache.set(gameId, game);
-  return game;
+  const normalized = game && { ...game, sourceKind: game.sourceKind || "stored" };
+  gameCache.set(gameId, normalized);
+  return normalized;
 }
 
 async function getGameFileMap(gameId) {
@@ -249,6 +253,17 @@ async function getIndexedDbBlob(storageRef) {
   return record && record.blob;
 }
 
+async function getLocalFolderHandle(gameId) {
+  const db = await openDb();
+  const record = await requestToPromise(
+    db
+      .transaction(HANDLE_STORE, "readonly")
+      .objectStore(HANDLE_STORE)
+      .get(gameId),
+  );
+  return record && record.handle;
+}
+
 async function getOpfsBlob(gameId, path) {
   try {
     if (!navigator.storage || !navigator.storage.getDirectory) return undefined;
@@ -261,6 +276,24 @@ async function getOpfsBlob(gameId, path) {
     for (const part of parts) dir = await dir.getDirectoryHandle(part);
     const handle = await dir.getFileHandle(name);
     return await handle.getFile();
+  } catch {
+    return undefined;
+  }
+}
+
+async function getLocalFolderBlob(gameId, path) {
+  try {
+    const handle = await getLocalFolderHandle(gameId);
+    if (!handle) return undefined;
+
+    const parts = normalizePath(path).split("/");
+    const name = parts.pop();
+    if (!name) return undefined;
+
+    let dir = handle;
+    for (const part of parts) dir = await dir.getDirectoryHandle(part);
+    const fileHandle = await dir.getFileHandle(name);
+    return await fileHandle.getFile();
   } catch {
     return undefined;
   }
@@ -284,9 +317,11 @@ async function serveGameFile(url, request) {
   if (!record) return new Response("File not found", { status: 404 });
 
   const blob =
-    record.storageKind === "opfs"
-      ? await getOpfsBlob(gameId, record.path)
-      : await getIndexedDbBlob(record.storageRef);
+    record.storageKind === "local-folder"
+      ? await getLocalFolderBlob(gameId, record.storageRef || record.path)
+      : record.storageKind === "opfs"
+        ? await getOpfsBlob(gameId, record.path)
+        : await getIndexedDbBlob(record.storageRef);
   if (!blob) return new Response("File body not found", { status: 404 });
 
   const headers = new Headers({

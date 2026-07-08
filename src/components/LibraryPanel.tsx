@@ -18,6 +18,7 @@ interface LibraryPanelProps {
   error: string | null;
   games: GameRecord[];
   downloadSaves: (game: GameRecord) => void;
+  openFolder: () => void;
   importFolder: (event: ChangeEvent<HTMLInputElement>) => void;
   importZip: (event: ChangeEvent<HTMLInputElement>) => void;
   progress: ImportProgress;
@@ -44,6 +45,7 @@ export function LibraryPanel({
   error,
   games,
   downloadSaves,
+  openFolder,
   importFolder,
   importZip,
   progress,
@@ -94,9 +96,9 @@ export function LibraryPanel({
         <div className="import-actions">
           <button
             type="button"
-            aria-label="Import folder"
-            title="Import folder"
-            onClick={() => directoryInputRef.current?.click()}
+            aria-label="Open folder"
+            title="Open folder"
+            onClick={openFolder}
           >
             <Icon name="folder" />
           </button>

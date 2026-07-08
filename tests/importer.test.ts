@@ -1,5 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { decodeZipFileName } from "../src/lib/importer";
+import { candidateFromDirectoryHandle, decodeZipFileName } from "../src/lib/importer";
+import type { BrowserFileSystemDirectoryHandle, BrowserFileSystemFileHandle } from "../src/lib/storage";
+
+function fileHandle(name: string, size: number): BrowserFileSystemFileHandle {
+  return {
+    kind: "file",
+    name,
+    async getFile() {
+      return new File([new Uint8Array(size)], name);
+    },
+    async createWritable() {
+      throw new Error("Test file handles are read-only.");
+    },
+  };
+}
+
+function directoryHandle(
+  name: string,
+  entries: Record<string, BrowserFileSystemDirectoryHandle | BrowserFileSystemFileHandle>
+): BrowserFileSystemDirectoryHandle {
+  return {
+    kind: "directory",
+    name,
+    async *entries() {
+      for (const entry of Object.entries(entries)) {
+        yield entry;
+      }
+    },
+    async getDirectoryHandle(entryName: string) {
+      const entry = entries[entryName];
+      if (!entry || entry.kind !== "directory") throw new Error(`Missing directory: ${entryName}`);
+      return entry;
+    },
+    async getFileHandle(entryName: string) {
+      const entry = entries[entryName];
+      if (!entry || entry.kind !== "file") throw new Error(`Missing file: ${entryName}`);
+      return entry;
+    },
+    async removeEntry() {
+      throw new Error("Test directory handles are read-only.");
+    },
+  };
+}
 
 describe("ZIP filename decoding", () => {
   it("decodes UTF-8 names", () => {
@@ -15,5 +57,32 @@ describe("ZIP filename decoding", () => {
     ]);
 
     expect(decodeZipFileName(bytes)).toBe("www/img/pictures/説明14.rpgmvp");
+  });
+});
+
+describe("folder handle scanning", () => {
+  it("scans metadata, strips a common wrapper, finds the entrypoint, and keeps source paths", async () => {
+    const handle = directoryHandle("Downloads", {
+      Game: directoryHandle("Game", {
+        "index.html": fileHandle("index.html", 10),
+        js: directoryHandle("js", {
+          "main.js": fileHandle("main.js", 20),
+        }),
+        data: directoryHandle("data", {
+          "Actors.json": fileHandle("Actors.json", 30),
+        }),
+      }),
+    });
+
+    const candidate = await candidateFromDirectoryHandle(handle);
+
+    expect(candidate.title).toBe("Game");
+    expect(candidate.entryPath).toBe("index.html");
+    expect(candidate.files).toMatchObject([
+      { path: "index.html", sourcePath: "Game/index.html", size: 10 },
+      { path: "js/main.js", sourcePath: "Game/js/main.js", size: 20 },
+      { path: "data/Actors.json", sourcePath: "Game/data/Actors.json", size: 30 },
+    ]);
+    expect(candidate.totalBytes).toBe(60);
   });
 });

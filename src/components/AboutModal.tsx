@@ -33,10 +33,15 @@ export function AboutModal({ onClose }: AboutModalProps) {
           <h3>How to Use</h3>
           <ol>
             <li>
-              Import a web export folder or ZIP that contains game{" "}
-              <code>index.html</code>.
+              Open a folder for a large game, or import a ZIP for a smaller
+              portable game.
             </li>
-            <li>Select a game from the library.</li>
+            <li>
+              Make sure it contains game <code>index.html</code>.
+            </li>
+            <li>
+              Select a game from the library.
+            </li>
             <li>Use the Overlay for transparent selectable text.</li>
             <li>Enable Show to make overlay text visible.</li>
             <li>Use Guard to stop configured keys from entering the game.</li>
@@ -47,9 +52,8 @@ export function AboutModal({ onClose }: AboutModalProps) {
         <div className="modal-section">
           <h3>Privacy</h3>
           <p>
-            This project does not provide game files. Imported files stay in
-            your browser storage. They are not uploaded by this app or stored by
-            this project.
+            This project does not provide game files. Nothing is uploaded by
+            this app or stored on a server.
           </p>
           <p>
             This is a backendless static web app. It does not need a server
