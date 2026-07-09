@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPlayerSettings } from "../src/lib/defaults";
-import { matchesReservedKey, namespaceStorageKey, reservedKeyForEvent, unnamespaceStorageKey } from "../src/lib/keys";
+import { clearGameStorageNamespace, matchesReservedKey, namespaceStorageKey, reservedKeyForEvent, unnamespaceStorageKey } from "../src/lib/keys";
 import { dictionaryGuardFor, normalizeDictionaryDismissGuard, normalizePlayerSettings, overlayTogglePatch, showTogglePatch } from "../src/lib/playerSettings";
 import type { GameRecord, PlayerSettings } from "../src/lib/types";
 
@@ -14,6 +14,32 @@ function gameWithSettings(settings: Partial<PlayerSettings>): GameRecord {
     fileCount: 1,
     totalBytes: 1,
     settings: { ...defaultPlayerSettings(), ...settings },
+  };
+}
+
+type MemoryStorage = Pick<Storage, "key" | "length" | "removeItem"> & {
+  entries(): [string, string][];
+  setItem(key: string, value: string): void;
+};
+
+function createMemoryStorage(): MemoryStorage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    entries() {
+      return Array.from(values.entries());
+    },
+    key(index: number) {
+      return Array.from(values.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      values.delete(String(key));
+    },
+    setItem(key: string, value: string) {
+      values.set(String(key), String(value));
+    },
   };
 }
 
@@ -122,5 +148,20 @@ describe("localStorage namespacing", () => {
     const key = namespaceStorageKey("game-a", "RPG Global");
     expect(namespaceStorageKey("game-a", key)).toBe(key);
     expect(unnamespaceStorageKey("game-a", key)).toBe("RPG Global");
+  });
+
+  it("clears only localStorage entries tied to one game namespace", () => {
+    const storage = createMemoryStorage();
+    storage.setItem(namespaceStorageKey("game-a", "RPG File1"), "save-a");
+    storage.setItem(namespaceStorageKey("game-a", "Plugin State"), "state-a");
+    storage.setItem(namespaceStorageKey("game-b", "RPG File1"), "save-b");
+    storage.setItem("unrelated", "keep");
+
+    clearGameStorageNamespace("game-a", storage);
+
+    expect(storage.entries()).toEqual([
+      [namespaceStorageKey("game-b", "RPG File1"), "save-b"],
+      ["unrelated", "keep"],
+    ]);
   });
 });

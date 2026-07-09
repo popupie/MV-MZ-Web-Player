@@ -6,6 +6,7 @@ import {
   importCandidate,
   importLocalFolderCandidate,
 } from "../lib/importer";
+import { clearGameStorageNamespace } from "../lib/keys";
 import { normalizePlayerSettings } from "../lib/playerSettings";
 import { downloadSaveZip } from "../lib/saveExport";
 import { registerPlayerServiceWorker } from "../lib/serviceWorker";
@@ -316,6 +317,7 @@ export function useGameLibrary(onImportStart?: () => void) {
   async function removeGame(game: GameRecord) {
     setError(null);
     await deleteGame(game.id);
+    clearGameStorageNamespace(game.id);
     clearServiceWorkerGameCache(game.id);
     const remaining = games.filter((item) => item.id !== game.id);
     setGames(remaining);

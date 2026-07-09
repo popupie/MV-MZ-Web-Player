@@ -21,6 +21,22 @@ export function storageNamespace(gameId: string): string {
   return `mz-player:${gameId}:`;
 }
 
+export type RemovableStorage = Pick<Storage, "key" | "length" | "removeItem">;
+
+export function clearGameStorageNamespace(gameId: string, storage: RemovableStorage = window.localStorage): void {
+  const prefix = storageNamespace(gameId);
+  const keys: string[] = [];
+
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(prefix)) keys.push(key);
+  }
+
+  for (const key of keys) {
+    storage.removeItem(key);
+  }
+}
+
 export function namespaceStorageKey(gameId: string, key: string): string {
   const prefix = storageNamespace(gameId);
   return key.startsWith(prefix) ? key : `${prefix}${key}`;
