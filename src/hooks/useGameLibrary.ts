@@ -102,11 +102,39 @@ async function browserStorageError(
   if (availableBytes === undefined || requiredBytes <= availableBytes)
     return undefined;
 
+  return browserStorageLimitMessage(source);
+}
+
+function browserStorageLimitMessage(
+  source: BrowserStorageImportSource,
+): string {
   if (source === "folder") {
-    return "Folder is too big to upload.";
+    return "Browser storage limit exceeded.";
   }
 
-  return "ZIP is too big. Extract it and import the folder instead.";
+  return "Browser storage limit exceeded.";
+}
+
+function isBrowserStorageLimitError(cause: unknown): boolean {
+  if (!(cause instanceof Error)) return false;
+
+  const details = `${cause.name} ${cause.message}`;
+  return (
+    cause.name === "QuotaExceededError" ||
+    cause.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    /quota|storage.*exceed|exceed.*storage|out of.*storage/i.test(details)
+  );
+}
+
+function importErrorMessage(
+  cause: unknown,
+  source: BrowserStorageImportSource,
+): string {
+  if (isBrowserStorageLimitError(cause)) {
+    return browserStorageLimitMessage(source);
+  }
+
+  return cause instanceof Error ? cause.message : "Import failed.";
 }
 
 export function useGameLibrary(onImportStart?: () => void) {
@@ -255,13 +283,8 @@ export function useGameLibrary(onImportStart?: () => void) {
       await refreshGames(game.id);
       setProgress(idleProgress);
     } catch (cause) {
-      setProgress({
-        phase: "error",
-        label: "Import failed",
-        completed: 0,
-        total: 0,
-      });
-      setError(cause instanceof Error ? cause.message : "Import failed.");
+      setProgress(idleProgress);
+      setError(importErrorMessage(cause, source));
     }
   }
 
