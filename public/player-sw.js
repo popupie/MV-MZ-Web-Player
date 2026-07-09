@@ -105,6 +105,25 @@ function normalizePath(path) {
   return parts.join("/");
 }
 
+function unicodePathAliases(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return [];
+  const aliases = [];
+  const seen = new Set([normalized]);
+
+  for (const candidate of [
+    normalized.normalize("NFC"),
+    normalized.normalize("NFD"),
+  ]) {
+    const alias = normalizePath(candidate);
+    if (!alias || seen.has(alias)) continue;
+    aliases.push(alias);
+    seen.add(alias);
+  }
+
+  return aliases;
+}
+
 // Reverse maps for filenames where Shift_JIS bytes were decoded as legacy single-byte ZIP encodings.
 const MOJIBAKE_DECODE_TABLES = [
   {
@@ -182,8 +201,45 @@ function mojibakePathAliases(path) {
   return aliases;
 }
 
+function pathLookupAliases(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return [];
+  const aliases = [];
+  const seen = new Set([normalized]);
+
+  function addAlias(candidate) {
+    if (!candidate || seen.has(candidate)) return;
+    aliases.push(candidate);
+    seen.add(candidate);
+  }
+
+  for (const alias of unicodePathAliases(normalized)) addAlias(alias);
+  for (const alias of mojibakePathAliases(normalized)) {
+    addAlias(alias);
+    for (const unicodeAlias of unicodePathAliases(alias)) addAlias(unicodeAlias);
+  }
+
+  return aliases;
+}
+
 function setIfAbsent(map, key, value) {
   if (key && !map.has(key)) map.set(key, value);
+}
+
+function getByPathWithAliases(map, path) {
+  const normalized = normalizePath(path);
+  const candidates = [normalized, ...pathLookupAliases(normalized)];
+
+  for (const candidate of candidates) {
+    const record =
+      map.exact.get(candidate) ||
+      map.lower.get(candidate.toLowerCase()) ||
+      map.alias.get(candidate) ||
+      map.lowerAlias.get(candidate.toLowerCase());
+    if (record) return record;
+  }
+
+  return undefined;
 }
 
 async function getGame(gameId) {
@@ -220,7 +276,7 @@ async function getGameFileMap(gameId) {
     const normalized = normalizePath(record.path);
     setIfAbsent(map.exact, normalized, record);
     setIfAbsent(map.lower, normalized.toLowerCase(), record);
-    for (const alias of mojibakePathAliases(normalized)) {
+    for (const alias of pathLookupAliases(normalized)) {
       setIfAbsent(map.alias, alias, record);
       setIfAbsent(map.lowerAlias, alias.toLowerCase(), record);
     }
@@ -231,13 +287,7 @@ async function getGameFileMap(gameId) {
 
 async function getStoredFile(gameId, path) {
   const map = await getGameFileMap(gameId);
-  const normalized = normalizePath(path);
-  return (
-    map.exact.get(normalized) ||
-    map.lower.get(normalized.toLowerCase()) ||
-    map.alias.get(normalized) ||
-    map.lowerAlias.get(normalized.toLowerCase())
-  );
+  return getByPathWithAliases(map, path);
 }
 
 async function getGameFiles(gameId) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findEntryPath, mojibakePathAliases, normalizeStoredPath, stripCommonWrapper, titleFromEntry } from "../src/lib/paths";
+import { findEntryPath, mojibakePathAliases, normalizeStoredPath, pathLookupAliases, stripCommonWrapper, titleFromEntry } from "../src/lib/paths";
 
 describe("path helpers", () => {
   it("normalizes separators and removes traversal", () => {
@@ -38,5 +38,15 @@ describe("path helpers", () => {
     for (const [requestedPath, storedPath] of samples) {
       expect(mojibakePathAliases(storedPath)).toContain(requestedPath);
     }
+  });
+
+  it("matches composed and decomposed Unicode filename aliases", () => {
+    const requestedPath = "www/fonts/ロゴたいぷゴシックCondense.otf";
+    const storedPath = requestedPath.normalize("NFD");
+
+    expect(storedPath).toBe("www/fonts/ロゴたいぷゴシックCondense.otf");
+    expect(normalizeStoredPath(storedPath)).toBe(storedPath);
+    expect(pathLookupAliases(storedPath)).toContain(requestedPath);
+    expect(pathLookupAliases(requestedPath)).toContain(storedPath);
   });
 });

@@ -15,6 +15,23 @@ export function normalizeStoredPath(path: string): string {
   return parts.join("/");
 }
 
+export function unicodePathAliases(path: string): string[] {
+  const normalized = normalizeStoredPath(path);
+  if (!normalized) return [];
+
+  const aliases: string[] = [];
+  const seen = new Set([normalized]);
+
+  for (const candidate of [normalized.normalize("NFC"), normalized.normalize("NFD")]) {
+    const alias = normalizeStoredPath(candidate);
+    if (!alias || seen.has(alias)) continue;
+    aliases.push(alias);
+    seen.add(alias);
+  }
+
+  return aliases;
+}
+
 // Reverse maps for filenames where Shift_JIS bytes were decoded as legacy single-byte ZIP encodings.
 const mojibakeDecodeTables = [
   {
@@ -90,6 +107,28 @@ export function mojibakePathAliases(path: string): string[] {
       const slashBytes = bytesFromMojibake(normalized, table.chars, slashIndex);
       if (slashBytes) addAlias(decodeShiftJis(slashBytes));
     }
+  }
+
+  return aliases;
+}
+
+export function pathLookupAliases(path: string): string[] {
+  const normalized = normalizeStoredPath(path);
+  if (!normalized) return [];
+
+  const aliases: string[] = [];
+  const seen = new Set([normalized]);
+
+  function addAlias(candidate: string) {
+    if (!candidate || seen.has(candidate)) return;
+    aliases.push(candidate);
+    seen.add(candidate);
+  }
+
+  for (const alias of unicodePathAliases(normalized)) addAlias(alias);
+  for (const alias of mojibakePathAliases(normalized)) {
+    addAlias(alias);
+    for (const unicodeAlias of unicodePathAliases(alias)) addAlias(unicodeAlias);
   }
 
   return aliases;
