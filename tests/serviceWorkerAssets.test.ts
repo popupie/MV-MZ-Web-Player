@@ -43,7 +43,7 @@ describe("service worker RPG Maker asset helpers", () => {
 
     expect(helpers.rpgMakerAssetPathAliases("www/img/pictures/logo.rpgmvp")).toContain("www/img/pictures/logo.jpg");
     expect(helpers.rpgMakerAssetPathAliases("www/img/pictures/logo.webp")).toContain("www/img/pictures/logo.rpgmvp");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/img/pictures/logo.rpgmvp", "www/img/pictures/logo.jpg")).toBe(".jpg");
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/img/pictures/logo.rpgmvp", "www/img/pictures/logo.jpg")).toBe(true);
     expect(helpers.plainRequestEncryptedFallbackMime("www/img/pictures/logo.webp", "www/img/pictures/logo.rpgmvp")).toBe("image/webp");
     expect(helpers.imageMimeForBytes(jpegBytes)).toBe("image/jpeg");
     expect(helpers.imageMimeForBytes(webpBytes)).toBe("image/webp");
@@ -56,14 +56,16 @@ describe("service worker RPG Maker asset helpers", () => {
     const wavBytes = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]);
     const mp4Bytes = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20]);
 
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/audio/bgm/theme.rpgmvo", "www/audio/bgm/theme.ogg")).toBe(".ogg");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/audio/bgm/theme.rpgmvo", "www/audio/bgm/theme.m4a")).toBe(".m4a");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/audio/bgm/theme.rpgmvm", "www/audio/bgm/theme.mp3")).toBe(".mp3");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/audio/bgm/theme.rpgmvo__", "www/audio/bgm/theme.ogg_")).toBe(".ogg");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/audio/se/click.rpgmvm", "www/audio/se/click.m4a")).toBe(".m4a");
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.rpgmvo", "www/audio/bgm/theme.ogg")).toBe(true);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.rpgmvo", "www/audio/bgm/theme.m4a")).toBe(true);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.rpgmvm", "www/audio/bgm/theme.mp3")).toBe(true);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.ogg_", "www/audio/bgm/theme.ogg")).toBe(true);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.ogg__", "www/audio/bgm/theme.ogg")).toBe(true);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/bgm/theme.rpgmvo__", "www/audio/bgm/theme.ogg_")).toBe(false);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/audio/se/click.rpgmvm", "www/audio/se/click.m4a")).toBe(true);
     expect(helpers.plainRequestEncryptedFallbackMime("www/audio/bgm/theme.ogg", "www/audio/bgm/theme.rpgmvo")).toBe("audio/ogg");
     expect(helpers.plainRequestEncryptedFallbackMime("www/audio/bgm/theme.mp3", "www/audio/bgm/theme.rpgmvo")).toBe("audio/mpeg");
-    expect(helpers.plainRequestEncryptedFallbackMime("www/audio/bgm/theme.ogg_", "www/audio/bgm/theme.rpgmvo___")).toBe("audio/ogg");
+    expect(helpers.plainRequestEncryptedFallbackMime("www/audio/bgm/theme.ogg_", "www/audio/bgm/theme.rpgmvo___")).toBe(undefined);
     expect(helpers.plainRequestEncryptedFallbackMime("www/audio/se/click.m4a", "www/audio/se/click.rpgmvm")).toBe("audio/mp4");
     expect(helpers.mediaMimeForBytes(oggBytes)).toBe("audio/ogg");
     expect(helpers.mediaMimeForBytes(mp3Bytes)).toBe("audio/mpeg");
@@ -78,7 +80,7 @@ describe("service worker RPG Maker asset helpers", () => {
 
     expect(helpers.rpgMakerAssetPathAliases("www/movies/opening.webm_")).toContain("www/movies/opening.mp4");
     expect(helpers.rpgMakerAssetPathAliases("www/movies/opening.mp4__")).toContain("www/movies/opening.webm");
-    expect(helpers.encryptedRequestPlainFallbackExtension("www/movies/opening.webm_", "www/movies/opening.webm")).toBe(null);
+    expect(helpers.shouldEncryptPlainFallbackForEncryptedRequest("www/movies/opening.webm_", "www/movies/opening.webm")).toBe(false);
     expect(helpers.plainRequestEncryptedFallbackMime("www/movies/opening.webm", "www/movies/opening.mp4_")).toBe(undefined);
     expect(helpers.mediaMimeForBytes(webmBytes)).toBe("video/webm");
     expect(helpers.mediaMimeForBytes(mp4Bytes, "video/mp4")).toBe("video/mp4");
@@ -124,5 +126,23 @@ describe("service worker RPG Maker asset helpers", () => {
       expect(result.error, path).toBeUndefined();
       expect(new Uint8Array(await result.blob.arrayBuffer()), path).toEqual(bytes);
     }
+  });
+
+  it("passes through encrypted suffix fallback matches without decrypting or re-encrypting", async () => {
+    const helpers = loadServiceWorkerHelpers();
+    const bytes = Uint8Array.from([0x52, 0x50, 0x47, 0x4d, 0x56, 0, 0, 0, 0, 3, 1, 0, 1, 2, 3, 4]);
+    const blob = new Blob([bytes], { type: "application/octet-stream" });
+    const result = await helpers.transformAssetBlobForRequest(
+      "game-1",
+      {
+        requestedPath: "www/img/variablehud/Hud_1_gauge.png_",
+        matchedPath: "www/img/variablehud/Hud_1_gauge.png__",
+      },
+      blob,
+      undefined,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(new Uint8Array(await result.blob.arrayBuffer())).toEqual(bytes);
   });
 });

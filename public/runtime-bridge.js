@@ -1214,6 +1214,8 @@
 
   // player-runtime/bridge/encryptionFallback.ts
   var RPG_MAKER_HEADER_HEX = "5250474d560000000003010000000000";
+  var ENCRYPTION_FALLBACK_INSTALL_INTERVAL_MS = 10;
+  var MAX_ENCRYPTION_FALLBACK_INSTALL_ATTEMPTS = 500;
   var PNG_HEADER_BYTES = new Uint8Array([
     137,
     80,
@@ -1233,10 +1235,15 @@
     82
   ]);
   var JPEG_HEADER_BYTES = new Uint8Array([255, 216, 255]);
-  var GIF87A_HEADER_BYTES = new TextEncoder().encode("GIF87a");
-  var GIF89A_HEADER_BYTES = new TextEncoder().encode("GIF89a");
-  var WEBP_RIFF_HEADER_BYTES = new TextEncoder().encode("RIFF");
-  var WEBP_WEBP_HEADER_BYTES = new TextEncoder().encode("WEBP");
+  var GIF87A_HEADER_BYTES = new Uint8Array([71, 73, 70, 56, 55, 97]);
+  var GIF89A_HEADER_BYTES = new Uint8Array([71, 73, 70, 56, 57, 97]);
+  var WEBP_RIFF_HEADER_BYTES = new Uint8Array([82, 73, 70, 70]);
+  var WEBP_WEBP_HEADER_BYTES = new Uint8Array([87, 69, 66, 80]);
+  var OGG_HEADER_BYTES = new Uint8Array([79, 103, 103, 83]);
+  var RIFF_HEADER_BYTES = new Uint8Array([82, 73, 70, 70]);
+  var WAVE_HEADER_BYTES = new Uint8Array([87, 65, 86, 69]);
+  var ID3_HEADER_BYTES = new Uint8Array([73, 68, 51]);
+  var MP4_FTYP_HEADER_BYTES = new Uint8Array([102, 116, 121, 112]);
   function bytesToHex(bytes) {
     let output = "";
     for (const byte of bytes) output += byte.toString(16).padStart(2, "0");
@@ -1266,6 +1273,35 @@
     }
     return void 0;
   }
+  function isImageArrayBuffer(arrayBuffer) {
+    return Boolean(imageMimeTypeForArrayBuffer(arrayBuffer));
+  }
+  function isAudioArrayBuffer(arrayBuffer) {
+    if (!arrayBuffer) return false;
+    const bytes = new Uint8Array(arrayBuffer);
+    if (startsWithBytes(bytes, OGG_HEADER_BYTES)) return true;
+    if (startsWithBytes(bytes, ID3_HEADER_BYTES)) return true;
+    if (bytes.byteLength >= 2 && bytes[0] === 255 && (bytes[1] & 224) === 224) return true;
+    if (bytes.byteLength >= 12 && startsWithBytes(bytes, RIFF_HEADER_BYTES) && startsWithBytes(bytes.slice(8, 12), WAVE_HEADER_BYTES)) {
+      return true;
+    }
+    return bytes.byteLength >= 12 && startsWithBytes(bytes.slice(4, 8), MP4_FTYP_HEADER_BYTES);
+  }
+  function isMediaArrayBuffer(arrayBuffer) {
+    return isImageArrayBuffer(arrayBuffer) || isAudioArrayBuffer(arrayBuffer);
+  }
+  function repairRpgMakerEncryptedPng(arrayBuffer, defaultResult) {
+    const encryptedBytes = new Uint8Array(arrayBuffer || new ArrayBuffer(0));
+    if (!hasRpgMakerHeader(encryptedBytes)) {
+      if (defaultResult) return defaultResult;
+      throw new Error("Header is wrong");
+    }
+    const body = new Uint8Array(arrayBuffer.slice(16));
+    for (let index = 0; index < PNG_HEADER_BYTES.byteLength; index += 1) {
+      body[index] = PNG_HEADER_BYTES[index];
+    }
+    return body.buffer;
+  }
   function createImageBlobUrl(arrayBuffer) {
     const mimeType = imageMimeTypeForArrayBuffer(arrayBuffer);
     if (mimeType && typeof Blob !== "undefined" && window.URL && typeof window.URL.createObjectURL === "function") {
@@ -1282,57 +1318,96 @@
       defaultResult = void 0;
     }
     if (imageMimeTypeForArrayBuffer(defaultResult)) return defaultResult;
-    const encryptedBytes = new Uint8Array(arrayBuffer || new ArrayBuffer(0));
-    if (!hasRpgMakerHeader(encryptedBytes)) {
-      if (defaultResult) return defaultResult;
-      throw new Error("Header is wrong");
+    return repairRpgMakerEncryptedPng(arrayBuffer, defaultResult);
+  }
+  function decryptMediaArrayBufferWithFallback(arrayBuffer, defaultDecrypt) {
+    if (isMediaArrayBuffer(arrayBuffer)) return arrayBuffer;
+    let defaultResult;
+    try {
+      defaultResult = defaultDecrypt(arrayBuffer);
+    } catch (error) {
+      defaultResult = void 0;
     }
-    const body = new Uint8Array(arrayBuffer.slice(16));
-    for (let index = 0; index < PNG_HEADER_BYTES.byteLength; index += 1) {
-      body[index] = PNG_HEADER_BYTES[index];
+    if (isMediaArrayBuffer(defaultResult)) return defaultResult;
+    return repairRpgMakerEncryptedPng(arrayBuffer, defaultResult);
+  }
+  function patchUtilsDecryptArrayBuffer() {
+    const utils = window.Utils;
+    if (!utils || typeof utils.decryptArrayBuffer !== "function" || utils.decryptArrayBuffer.__MzPlayerEncryptionFallback) {
+      return false;
     }
-    return body.buffer;
+    const decryptArrayBuffer = utils.decryptArrayBuffer;
+    utils.decryptArrayBuffer = function(arrayBuffer) {
+      return decryptMediaArrayBufferWithFallback(arrayBuffer, (source) => {
+        return decryptArrayBuffer.call(this, source);
+      });
+    };
+    Object.defineProperty(utils.decryptArrayBuffer, "__MzPlayerEncryptionFallback", {
+      value: true
+    });
+    return true;
+  }
+  function patchDecrypterDecryptImg() {
+    const decrypter = window.Decrypter;
+    if (!decrypter || typeof decrypter.decryptImg !== "function" || typeof decrypter.decryptArrayBuffer !== "function" || decrypter.decryptImg.__MzPlayerEncryptionFallback) {
+      return false;
+    }
+    decrypter.decryptImg = function(url, bitmap) {
+      url = this.extToEncryptExt(url);
+      const requestFile = new XMLHttpRequest();
+      requestFile.open("GET", url);
+      requestFile.responseType = "arraybuffer";
+      requestFile.send();
+      requestFile.onload = function() {
+        if (this.status < Decrypter._xhrOk) {
+          const arrayBuffer = decryptImageArrayBufferWithFallback(requestFile.response, (source) => {
+            return Decrypter.decryptArrayBuffer(source);
+          });
+          bitmap._image.addEventListener("load", bitmap._loadListener = Bitmap.prototype._onLoad.bind(bitmap));
+          bitmap._image.addEventListener(
+            "error",
+            bitmap._errorListener = bitmap._loader || Bitmap.prototype._onError.bind(bitmap)
+          );
+          bitmap._image.src = createImageBlobUrl(arrayBuffer);
+        }
+      };
+      requestFile.onerror = function() {
+        if (bitmap._loader) {
+          bitmap._loader();
+        } else {
+          bitmap._onError();
+        }
+      };
+    };
+    Object.defineProperty(decrypter.decryptImg, "__MzPlayerEncryptionFallback", {
+      value: true
+    });
+    return true;
   }
   function installRpgMakerEncryptionFallback() {
-    if (window.__mzPlayerEncryptionFallbackInstalled) return;
-    const install = () => {
-      if (window.__mzPlayerEncryptionFallbackInstalled) return true;
-      const decrypter = window.Decrypter;
-      if (!decrypter || typeof decrypter.decryptImg !== "function" || typeof decrypter.decryptArrayBuffer !== "function") {
-        return false;
-      }
-      decrypter.decryptImg = function(url, bitmap) {
-        url = this.extToEncryptExt(url);
-        const requestFile = new XMLHttpRequest();
-        requestFile.open("GET", url);
-        requestFile.responseType = "arraybuffer";
-        requestFile.send();
-        requestFile.onload = function() {
-          if (this.status < Decrypter._xhrOk) {
-            const arrayBuffer = decryptImageArrayBufferWithFallback(requestFile.response, (source) => {
-              return Decrypter.decryptArrayBuffer(source);
-            });
-            bitmap._image.addEventListener("load", bitmap._loadListener = Bitmap.prototype._onLoad.bind(bitmap));
-            bitmap._image.addEventListener(
-              "error",
-              bitmap._errorListener = bitmap._loader || Bitmap.prototype._onError.bind(bitmap)
-            );
-            bitmap._image.src = createImageBlobUrl(arrayBuffer);
-          }
-        };
-        requestFile.onerror = function() {
-          if (bitmap._loader) {
-            bitmap._loader();
-          } else {
-            bitmap._onError();
-          }
-        };
-      };
-      window.__mzPlayerEncryptionFallbackInstalled = true;
-      return true;
+    const state = window.__mzPlayerEncryptionFallbackState || {
+      attempts: 0,
+      decrypter: false,
+      timer: void 0,
+      utils: false
     };
-    if (install()) return;
-    setTimeout(installRpgMakerEncryptionFallback, 250);
+    window.__mzPlayerEncryptionFallbackState = state;
+    const install = () => {
+      state.utils = patchUtilsDecryptArrayBuffer() || state.utils;
+      state.decrypter = patchDecrypterDecryptImg() || state.decrypter;
+      window.__mzPlayerEncryptionFallbackInstalled = state.utils || state.decrypter;
+      return window.__mzPlayerEncryptionFallbackInstalled;
+    };
+    if (install() && state.utils && state.decrypter) return;
+    if (state.timer) return;
+    state.timer = setInterval(() => {
+      const done = install();
+      state.attempts += 1;
+      if (done && state.utils && state.decrypter || state.attempts >= MAX_ENCRYPTION_FALLBACK_INSTALL_ATTEMPTS) {
+        clearInterval(state.timer);
+        state.timer = void 0;
+      }
+    }, ENCRYPTION_FALLBACK_INSTALL_INTERVAL_MS);
   }
 
   // player-runtime/bridge/index.ts

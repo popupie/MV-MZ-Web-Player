@@ -285,8 +285,12 @@ function rpgMakerAssetPathAliases(path) {
   }
 
   if (lowerPath.endsWith(".rpgmvp")) {
-    for (const encryptedSuffix of ENCRYPTED_IMAGE_SUFFIXES) add(pathWithExtension(normalized, encryptedSuffix));
-    for (const imageExtension of PLAIN_IMAGE_EXTENSIONS) add(pathWithExtension(normalized, imageExtension));
+    for (const encryptedSuffix of ENCRYPTED_IMAGE_SUFFIXES) {
+      add(pathWithExtension(normalized, encryptedSuffix));
+    }
+    for (const imageExtension of PLAIN_IMAGE_EXTENSIONS) {
+      add(pathWithExtension(normalized, imageExtension));
+    }
     return aliases;
   }
 
@@ -381,41 +385,29 @@ function setIfAbsent(map, key, value) {
   if (key && !map.has(key)) map.set(key, value);
 }
 
-function getPathMatchWithAliases(map, path) {
+function getMatchByPathWithAliases(map, path) {
   const normalized = normalizePath(path);
   const candidates = [normalized, ...pathLookupAliases(normalized)];
 
   for (const candidate of candidates) {
-    const record =
+    const match =
       map.exact.get(candidate) ||
       map.lower.get(candidate.toLowerCase());
-    if (record) {
-      return {
-        record,
-        requestedPath: normalized,
-        matchedPath: normalizePath(record.path),
-      };
-    }
+    if (match) return { ...match, requestedPath: normalized };
   }
 
   for (const candidate of candidates) {
-    const record =
+    const match =
       map.alias.get(candidate) ||
       map.lowerAlias.get(candidate.toLowerCase());
-    if (record) {
-      return {
-        record,
-        requestedPath: normalized,
-        matchedPath: normalizePath(record.path),
-      };
-    }
+    if (match) return { ...match, requestedPath: normalized };
   }
 
   return undefined;
 }
 
 function getByPathWithAliases(map, path) {
-  return getPathMatchWithAliases(map, path)?.record;
+  return getMatchByPathWithAliases(map, path)?.record;
 }
 
 async function getGame(gameId) {
@@ -450,11 +442,12 @@ async function getGameFileMap(gameId) {
   };
   for (const record of records) {
     const normalized = normalizePath(record.path);
-    setIfAbsent(map.exact, normalized, record);
-    setIfAbsent(map.lower, normalized.toLowerCase(), record);
+    const match = { matchedPath: normalized, record };
+    setIfAbsent(map.exact, normalized, match);
+    setIfAbsent(map.lower, normalized.toLowerCase(), match);
     for (const alias of pathLookupAliases(normalized)) {
-      setIfAbsent(map.alias, alias, record);
-      setIfAbsent(map.lowerAlias, alias.toLowerCase(), record);
+      setIfAbsent(map.alias, alias, match);
+      setIfAbsent(map.lowerAlias, alias.toLowerCase(), match);
     }
   }
   fileCache.set(gameId, map);
@@ -468,7 +461,7 @@ async function getStoredFile(gameId, path) {
 
 async function getStoredFileMatch(gameId, path) {
   const map = await getGameFileMap(gameId);
-  return getPathMatchWithAliases(map, path);
+  return getMatchByPathWithAliases(map, path);
 }
 
 async function getGameFiles(gameId) {
@@ -627,27 +620,22 @@ function isMissingPluginMarkerPath(path) {
   );
 }
 
-function pathHasExtension(path, extension) {
+function pathHasExtensionIgnoringSuffixMarkers(path, extension) {
   return pathWithoutSuffixMarkers(path).toLowerCase().endsWith(extension);
 }
 
 function isPlainImagePath(path) {
-  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  const lowerPath = path.toLowerCase();
   return PLAIN_IMAGE_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
 }
 
 function isPlainAudioPath(path) {
-  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  const lowerPath = path.toLowerCase();
   return PLAIN_AUDIO_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
 }
 
-function isPlainVideoPath(path) {
-  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
-  return PLAIN_VIDEO_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
-}
-
 function plainMimeForPath(path) {
-  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  const lowerPath = path.toLowerCase();
   if (lowerPath.endsWith(".png")) return "image/png";
   if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) return "image/jpeg";
   if (lowerPath.endsWith(".webp")) return "image/webp";
@@ -672,39 +660,24 @@ function isEncryptedImagePath(path) {
 function isEncryptedAudioPath(path) {
   const lowerPath = path.toLowerCase();
   return (
-    pathHasExtension(lowerPath, ".rpgmvo") ||
-    pathHasExtension(lowerPath, ".rpgmvm")
+    PLAIN_AUDIO_EXTENSIONS.some((extension) =>
+      [extension + "_", extension + "__", extension + "___"].some((encryptedSuffix) =>
+        lowerPath.endsWith(encryptedSuffix),
+      ),
+    ) ||
+    pathHasExtensionIgnoringSuffixMarkers(lowerPath, ".rpgmvo") ||
+    pathHasExtensionIgnoringSuffixMarkers(lowerPath, ".rpgmvm")
   );
 }
 
-function isEncryptedAssetPath(path) {
-  return isEncryptedImagePath(path) || isEncryptedAudioPath(path);
-}
-
-function isPlainAssetPath(path) {
-  return isPlainImagePath(path) || isPlainAudioPath(path) || isPlainVideoPath(path);
-}
-
-function encryptedRequestPlainFallbackExtension(requestedPath, matchedPath) {
-  if (!isEncryptedAssetPath(requestedPath)) return null;
-
-  if (isEncryptedImagePath(requestedPath) && isPlainImagePath(matchedPath)) {
-    const lowerMatchedPath = pathWithoutSuffixMarkers(matchedPath).toLowerCase();
-    return PLAIN_IMAGE_EXTENSIONS.find((extension) => lowerMatchedPath.endsWith(extension)) || ".png";
-  }
-
-  if (isEncryptedAudioPath(requestedPath) && isPlainAudioPath(matchedPath)) {
-    const lowerMatchedPath = pathWithoutSuffixMarkers(matchedPath).toLowerCase();
-    return PLAIN_AUDIO_EXTENSIONS.find((extension) => lowerMatchedPath.endsWith(extension)) || ".ogg";
-  }
-
-  return null;
+function shouldEncryptPlainFallbackForEncryptedRequest(requestedPath, matchedPath) {
+  return (
+    (isEncryptedImagePath(requestedPath) && isPlainImagePath(matchedPath)) ||
+    (isEncryptedAudioPath(requestedPath) && isPlainAudioPath(matchedPath))
+  );
 }
 
 function plainRequestEncryptedFallbackMime(requestedPath, matchedPath) {
-  if (!isPlainAssetPath(requestedPath) || !isEncryptedAssetPath(matchedPath)) {
-    return undefined;
-  }
   if (isPlainImagePath(requestedPath) && isEncryptedImagePath(matchedPath)) {
     return plainMimeForPath(requestedPath);
   }
@@ -828,7 +801,7 @@ async function transformAssetBlobForRequest(gameId, match, blob, requestClientId
     return { blob };
   }
 
-  const encryptedPlainExtension = encryptedRequestPlainFallbackExtension(
+  const shouldEncryptPlainFallback = shouldEncryptPlainFallbackForEncryptedRequest(
     match.requestedPath,
     match.matchedPath,
   );
@@ -836,7 +809,7 @@ async function transformAssetBlobForRequest(gameId, match, blob, requestClientId
     match.requestedPath,
     match.matchedPath,
   );
-  if (!encryptedPlainExtension && !decryptedMime) {
+  if (!shouldEncryptPlainFallback && !decryptedMime) {
     return { blob };
   }
 
@@ -848,7 +821,7 @@ async function transformAssetBlobForRequest(gameId, match, blob, requestClientId
   }
 
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  if (encryptedPlainExtension) {
+  if (shouldEncryptPlainFallback) {
     return {
       blob: new Blob([encryptRpgMakerAsset(bytes, key)], {
         type: isEncryptedImagePath(match.requestedPath)

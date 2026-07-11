@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   decryptImageArrayBufferWithFallback,
+  decryptMediaArrayBufferWithFallback,
   imageMimeTypeForArrayBuffer,
+  installRpgMakerEncryptionFallback,
+  isAudioArrayBuffer,
+  isImageArrayBuffer,
   isPngArrayBuffer,
 } from "../player-runtime/bridge/encryptionFallback";
 
@@ -21,6 +25,7 @@ const rpgMakerKey = Uint8Array.from([
   0xa8, 0x84, 0xa4, 0xd4, 0xd0, 0x45, 0xc3, 0x79,
   0x61, 0x5d, 0xfc, 0x56, 0xf1, 0xc1, 0xef, 0x92,
 ]);
+const oggHeader = Uint8Array.from([0x4f, 0x67, 0x67, 0x53, 0, 2, 3, 4]);
 
 function encryptedImageWithScrambledPngHeader(): ArrayBuffer {
   const bytes = new Uint8Array(64);
@@ -46,7 +51,7 @@ function decryptRpgMakerImage(source: ArrayBuffer): ArrayBuffer {
   return body.buffer;
 }
 
-describe("RPG Maker image encryption fallback", () => {
+describe("RPG Maker encryption fallback", () => {
   it("keeps normal decrypted PNG results", () => {
     const encrypted = encryptedImageWithScrambledPngHeader();
     const result = decryptImageArrayBufferWithFallback(encrypted, () => pngHeader.buffer);
@@ -79,5 +84,50 @@ describe("RPG Maker image encryption fallback", () => {
     expect(isPngArrayBuffer(result)).toBe(true);
     expect(resultBytes.slice(0, 16)).toEqual(pngHeader);
     expect(Array.from(resultBytes.slice(16, 20))).toEqual([1, 2, 3, 4]);
+  });
+
+  it("accepts already-plain image bytes when the MZ decryptor rejects them", () => {
+    const result = decryptMediaArrayBufferWithFallback(pngHeader.buffer, () => {
+      throw new Error("Decryption error");
+    });
+
+    expect(result).toBe(pngHeader.buffer);
+    expect(isImageArrayBuffer(result)).toBe(true);
+  });
+
+  it("accepts already-plain OGG bytes when the MZ decryptor rejects them", () => {
+    const result = decryptMediaArrayBufferWithFallback(oggHeader.buffer, () => {
+      throw new Error("Decryption error");
+    });
+
+    expect(result).toBe(oggHeader.buffer);
+    expect(isAudioArrayBuffer(result)).toBe(true);
+  });
+
+  it.each([
+    ["image", pngHeader.buffer],
+    ["OGG", oggHeader.buffer],
+  ])("patches MZ Utils.decryptArrayBuffer for already-plain %s fallback responses", (_label, mediaBuffer) => {
+    const previousWindow = (globalThis as typeof globalThis & { window?: unknown }).window;
+    const browserWindow: any = {
+      Utils: {
+        decryptArrayBuffer(_source: ArrayBuffer) {
+          throw new Error("Decryption error");
+        },
+      },
+    };
+    (globalThis as any).window = browserWindow;
+
+    try {
+      installRpgMakerEncryptionFallback();
+      const result = browserWindow.Utils.decryptArrayBuffer(mediaBuffer);
+
+      expect(result).toBe(mediaBuffer);
+    } finally {
+      if (browserWindow.__mzPlayerEncryptionFallbackState?.timer) {
+        clearInterval(browserWindow.__mzPlayerEncryptionFallbackState.timer);
+      }
+      (globalThis as any).window = previousWindow;
+    }
   });
 });
