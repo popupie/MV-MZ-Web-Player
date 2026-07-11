@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { candidateFromDirectoryHandle, candidateFromFolder, decodeZipFileName } from "../src/lib/importer";
+import JSZip from "jszip";
+import { candidateFromDirectoryHandle, candidateFromFolder, candidateFromZip, decodeZipFileName } from "../src/lib/importer";
 import type { BrowserFileSystemDirectoryHandle, BrowserFileSystemFileHandle } from "../src/lib/storage";
 
-function fileHandle(name: string, size: number): BrowserFileSystemFileHandle {
+function fileHandle(name: string, contents: number | string): BrowserFileSystemFileHandle {
   return {
     kind: "file",
     name,
     async getFile() {
-      return new File([new Uint8Array(size)], name);
+      return new File([typeof contents === "number" ? new Uint8Array(contents) : contents], name);
     },
     async createWritable() {
       throw new Error("Test file handles are read-only.");
@@ -43,9 +44,9 @@ function directoryHandle(
   };
 }
 
-function webkitFile(path: string, size: number): File {
+function webkitFile(path: string, contents: number | string): File {
   const name = path.split("/").at(-1) ?? path;
-  const file = new File([new Uint8Array(size)], name);
+  const file = new File([typeof contents === "number" ? new Uint8Array(contents) : contents], name);
   Object.defineProperty(file, "webkitRelativePath", {
     value: path,
   });
@@ -94,6 +95,36 @@ describe("folder handle scanning", () => {
     ]);
     expect(candidate.totalBytes).toBe(60);
   });
+
+  it("uses the RPG Maker title from System.json", async () => {
+    const handle = directoryHandle("Downloads", {
+      Game: directoryHandle("Game", {
+        "index.html": fileHandle("index.html", 10),
+        data: directoryHandle("data", {
+          "System.json": fileHandle("System.json", JSON.stringify({ gameTitle: "Actual Game" })),
+        }),
+      }),
+    });
+
+    const candidate = await candidateFromDirectoryHandle(handle);
+
+    expect(candidate.title).toBe("Actual Game");
+  });
+
+  it("falls back to the selected folder name when System.json has no title", async () => {
+    const handle = directoryHandle("Selected Game", {
+      www: directoryHandle("www", {
+        "index.html": fileHandle("index.html", 10),
+        data: directoryHandle("data", {
+          "System.json": fileHandle("System.json", JSON.stringify({ gameTitle: "" })),
+        }),
+      }),
+    });
+
+    const candidate = await candidateFromDirectoryHandle(handle);
+
+    expect(candidate.title).toBe("Selected Game");
+  });
 });
 
 describe("webkit folder scanning", () => {
@@ -115,5 +146,47 @@ describe("webkit folder scanning", () => {
     ]);
     expect(candidate.files.map((entry) => entry.file)).toEqual(files);
     expect(candidate.totalBytes).toBe(60);
+  });
+
+  it("uses the RPG Maker title when upload paths have no wrapper folder", async () => {
+    const files = [
+      webkitFile("index.html", 10),
+      webkitFile("data/System.json", JSON.stringify({ gameTitle: "Actual Game" })),
+    ];
+
+    const candidate = await candidateFromFolder(files);
+
+    expect(candidate.title).toBe("Actual Game");
+    expect(candidate.entryPath).toBe("index.html");
+  });
+
+  it("falls back to the selected folder name when upload paths have no game title", async () => {
+    const files = [
+      webkitFile("index.html", 10),
+      webkitFile("data/System.json", JSON.stringify({ gameTitle: "" })),
+    ];
+
+    const candidate = await candidateFromFolder(files, "Selected Game");
+
+    expect(candidate.title).toBe("Selected Game");
+    expect(candidate.entryPath).toBe("index.html");
+  });
+});
+
+describe("ZIP scanning", () => {
+  it("uses the RPG Maker title from System.json", async () => {
+    const zip = new JSZip();
+    zip.file("index.html", "");
+    zip.file("data/System.json", JSON.stringify({ gameTitle: "Actual Game" }));
+    const bytes = await zip.generateAsync({ type: "uint8array" });
+    const file = Object.assign(bytes, {
+      name: "archive.zip",
+      size: bytes.byteLength,
+    }) as unknown as File;
+
+    const candidate = await candidateFromZip(file);
+
+    expect(candidate.title).toBe("Actual Game");
+    expect(candidate.entryPath).toBe("index.html");
   });
 });

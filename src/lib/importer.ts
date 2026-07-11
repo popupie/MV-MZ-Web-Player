@@ -39,6 +39,13 @@ type LocalFolderFileHandleEntry = {
   handle: BrowserFileSystemFileHandle;
 };
 
+const FALLBACK_GAME_TITLE = "Imported Game";
+const SYSTEM_JSON_PATH_RANKS = new Map([
+  ["data/System.json", 0],
+  ["www/data/System.json", 1],
+]);
+const STRUCTURAL_FOLDER_TITLES = new Set(["www"]);
+
 function zipNameBytes(bytes: string[] | Uint8Array | Buffer): Uint8Array {
   if (bytes instanceof Uint8Array) return bytes;
   return Uint8Array.from(bytes.map((byte) => (typeof byte === "string" ? byte.charCodeAt(0) : byte)));
@@ -61,7 +68,64 @@ function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 }
 
-export async function candidateFromFolder(files: FileList | File[]): Promise<SessionFolderCandidate> {
+function systemJsonPathRank(path: string): number {
+  const normalized = normalizeStoredPath(path);
+  const exactRank = SYSTEM_JSON_PATH_RANKS.get(normalized);
+  if (exactRank !== undefined) return exactRank;
+
+  for (const [suffix, rank] of SYSTEM_JSON_PATH_RANKS) {
+    if (normalized.endsWith(`/${suffix}`)) return rank + SYSTEM_JSON_PATH_RANKS.size;
+  }
+
+  return Number.POSITIVE_INFINITY;
+}
+
+function gameTitleFromSystemJson(text: string): string {
+  try {
+    const data = JSON.parse(text) as { gameTitle?: unknown };
+    return typeof data.gameTitle === "string" ? data.gameTitle.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function titleFromSystemJsonEntries<T extends { path: string }>(
+  entries: T[],
+  readText: (entry: T) => Promise<string>,
+): Promise<string> {
+  const candidates = entries
+    .map((entry, index) => ({ entry, index, rank: systemJsonPathRank(entry.path) }))
+    .filter((candidate) => Number.isFinite(candidate.rank))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index);
+
+  for (const candidate of candidates) {
+    const title = gameTitleFromSystemJson(await readText(candidate.entry));
+    if (title) return title;
+  }
+
+  return "";
+}
+
+function candidateTitle(systemTitle: string, paths: string[], fallback: string): string {
+  if (systemTitle) return systemTitle;
+
+  const inferredTitle = titleFromEntry(paths, "");
+  if (
+    inferredTitle &&
+    inferredTitle !== FALLBACK_GAME_TITLE &&
+    !STRUCTURAL_FOLDER_TITLES.has(inferredTitle.toLowerCase())
+  ) {
+    return inferredTitle;
+  }
+
+  const normalizedFallback = fallback.replace(/\.[^.]+$/, "").trim();
+  return normalizedFallback || inferredTitle || FALLBACK_GAME_TITLE;
+}
+
+export async function candidateFromFolder(
+  files: FileList | File[],
+  fallbackTitle = FALLBACK_GAME_TITLE,
+): Promise<SessionFolderCandidate> {
   const entries = Array.from(files)
     .map((file) => ({
       path: normalizeStoredPath((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name),
@@ -76,9 +140,10 @@ export async function candidateFromFolder(files: FileList | File[]): Promise<Ses
     size: entry.file.size,
     mime: detectMime(entry.path),
   }));
+  const systemTitle = await titleFromSystemJsonEntries(normalized, (entry) => entry.file.text());
 
   return {
-    title: titleFromEntry(entries.map((entry) => entry.path), "Imported Game"),
+    title: candidateTitle(systemTitle, entries.map((entry) => entry.path), fallbackTitle),
     files: sessionFiles,
     entryPath: findEntryPath(paths),
     totalBytes: sessionFiles.reduce((sum, entry) => sum + entry.size, 0)
@@ -136,6 +201,7 @@ export async function candidateFromDirectoryHandle(
   onProgress?.({ phase: "reading", label: "Reading folder", completed: 0, total: fileEntries.length });
 
   const entries: LocalFolderCandidate["files"] = [];
+  let systemTitle = "";
   for (let index = 0; index < fileEntries.length; index += 1) {
     const entry = fileEntries[index];
     const file = await entry.handle.getFile();
@@ -145,6 +211,9 @@ export async function candidateFromDirectoryHandle(
       size: file.size,
       mime: detectMime(entry.path),
     });
+    if (!systemTitle && Number.isFinite(systemJsonPathRank(entry.path))) {
+      systemTitle = gameTitleFromSystemJson(await file.text());
+    }
 
     if (shouldReportProgress(index + 1, fileEntries.length, lastReportTime)) {
       lastReportTime = performance.now();
@@ -157,7 +226,7 @@ export async function candidateFromDirectoryHandle(
   const totalBytes = normalized.reduce((sum, entry) => sum + entry.size, 0);
 
   return {
-    title: titleFromEntry(entries.map((entry) => entry.path), directoryHandle.name ?? "Imported Game"),
+    title: candidateTitle(systemTitle, entries.map((entry) => entry.path), directoryHandle.name ?? FALLBACK_GAME_TITLE),
     files: normalized,
     entryPath: findEntryPath(paths),
     totalBytes,
@@ -188,9 +257,10 @@ export async function candidateFromZip(file: File, onProgress?: ProgressCallback
 
   const normalized = stripCommonWrapper(files);
   const paths = normalized.map((entry) => entry.path);
+  const systemTitle = await titleFromSystemJsonEntries(normalized, (entry) => entry.file.text());
 
   return {
-    title: titleFromEntry(files.map((entry) => entry.path), file.name),
+    title: candidateTitle(systemTitle, files.map((entry) => entry.path), file.name),
     files: normalized,
     entryPath: findEntryPath(paths),
     totalBytes: normalized.reduce((sum, entry) => sum + entry.file.size, 0)

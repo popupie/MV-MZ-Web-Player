@@ -49,6 +49,13 @@ type WindowWithDirectoryPicker = Window & {
     mode?: "read" | "readwrite";
   }) => Promise<BrowserFileSystemDirectoryHandle>;
 };
+type DirectoryInputElement = HTMLInputElement & {
+  webkitEntries?: Array<{ isDirectory?: boolean; name?: string }>;
+};
+type ChosenWebkitFolder = {
+  files: File[];
+  folderName: string;
+};
 
 function clearServiceWorkerGameCache(gameId: string) {
   navigator.serviceWorker.controller?.postMessage({
@@ -126,6 +133,19 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+function selectedFolderName(input: DirectoryInputElement, files: File[]): string {
+  const directoryEntry = input.webkitEntries?.find((entry) => entry.isDirectory && entry.name?.trim());
+  if (directoryEntry?.name) return directoryEntry.name.trim();
+
+  for (const file of files) {
+    const path = (file as File & { webkitRelativePath?: string }).webkitRelativePath ?? "";
+    const folderName = path.split("/").find(Boolean);
+    if (folderName) return folderName;
+  }
+
+  return "";
+}
+
 async function estimateStorageAfterMutation(
   previous?: StorageEstimate,
 ): Promise<StorageEstimate | undefined> {
@@ -148,17 +168,18 @@ async function estimateStorageAfterMutation(
   return latest;
 }
 
-function chooseWebkitFolder(): Promise<File[]> {
+function chooseWebkitFolder(): Promise<ChosenWebkitFolder> {
   return new Promise((resolve) => {
-    const input = document.createElement("input");
+    const input = document.createElement("input") as DirectoryInputElement;
     input.type = "file";
     input.multiple = true;
     input.className = "hidden-input";
     input.setAttribute("webkitdirectory", "");
 
     function finish(files: File[]) {
+      const folderName = selectedFolderName(input, files);
       input.remove();
-      resolve(files);
+      resolve({ files, folderName });
     }
 
     input.addEventListener(
@@ -341,6 +362,7 @@ export function useGameLibrary(onImportStart?: () => void) {
   }
 
   async function importFolder(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.target as DirectoryInputElement;
     const files = Array.from(event.target.files ?? []);
     if (files.length === 0) {
       event.target.value = "";
@@ -359,7 +381,7 @@ export function useGameLibrary(onImportStart?: () => void) {
         total: 1,
       });
       await waitForNextPaint();
-      const candidate = await candidateFromFolder(files);
+      const candidate = await candidateFromFolder(files, selectedFolderName(input, files));
       const game = await importSessionFolderCandidate(candidate, setProgress);
       registerSessionFolder(game.id, candidate.files);
       clearServiceWorkerGameCache(game.id);
@@ -540,7 +562,7 @@ export function useGameLibrary(onImportStart?: () => void) {
     setNotice(null);
     onImportStart?.();
     try {
-      const files = await chooseWebkitFolder();
+      const { files, folderName } = await chooseWebkitFolder();
       if (files.length === 0) {
         return;
       }
@@ -552,7 +574,7 @@ export function useGameLibrary(onImportStart?: () => void) {
         total: 1,
       });
       await waitForNextPaint();
-      const candidate = await candidateFromFolder(files);
+      const candidate = await candidateFromFolder(files, folderName);
       if (candidate.title !== game.title) {
         throw new Error(`Game mismatch.`);
       }
