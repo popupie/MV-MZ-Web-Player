@@ -12,6 +12,25 @@ const RPG_MAKER_ENCRYPTED_HEADER_BYTES = Uint8Array.from([
   0x52, 0x50, 0x47, 0x4d, 0x56, 0x00, 0x00, 0x00,
   0x00, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
+const PLAIN_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+const ENCRYPTED_IMAGE_SUFFIXES = [".png_", ".png__", ".png___"];
+const PLAIN_AUDIO_EXTENSIONS = [".ogg", ".m4a", ".mp3", ".wav", ".oga"];
+const ENCRYPTED_AUDIO_EXTENSIONS = [".rpgmvo", ".rpgmvm"];
+const PLAIN_VIDEO_EXTENSIONS = [".webm", ".mp4"];
+const PNG_HEADER_BYTES = Uint8Array.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+const JPEG_HEADER_BYTES = Uint8Array.from([0xff, 0xd8, 0xff]);
+const GIF87A_HEADER_BYTES = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x37, 0x61]);
+const GIF89A_HEADER_BYTES = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+const WEBP_RIFF_HEADER_BYTES = Uint8Array.from([0x52, 0x49, 0x46, 0x46]);
+const WEBP_WEBP_HEADER_BYTES = Uint8Array.from([0x57, 0x45, 0x42, 0x50]);
+const OGG_HEADER_BYTES = Uint8Array.from([0x4f, 0x67, 0x67, 0x53]);
+const RIFF_HEADER_BYTES = Uint8Array.from([0x52, 0x49, 0x46, 0x46]);
+const WAVE_HEADER_BYTES = Uint8Array.from([0x57, 0x41, 0x56, 0x45]);
+const ID3_HEADER_BYTES = Uint8Array.from([0x49, 0x44, 0x33]);
+const EBML_HEADER_BYTES = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]);
+const FTYP_HEADER_BYTES = Uint8Array.from([0x66, 0x74, 0x79, 0x70]);
 let dbPromise;
 const gameCache = new Map();
 const fileCache = new Map();
@@ -255,50 +274,67 @@ function rpgMakerAssetPathAliases(path) {
     }
   }
 
-  if (lowerPath.endsWith(".png")) {
-    const stem = normalized.slice(0, -".png".length);
+  for (const imageExtension of PLAIN_IMAGE_EXTENSIONS) {
+    if (!lowerPath.endsWith(imageExtension)) continue;
+    const stem = normalized.slice(0, -imageExtension.length);
     add(stem + ".rpgmvp");
-    add(stem + ".png_");
-    add(stem + ".png__");
-    add(stem + ".png___");
+    if (imageExtension === ".png") {
+      for (const encryptedSuffix of ENCRYPTED_IMAGE_SUFFIXES) add(stem + encryptedSuffix);
+    }
     return aliases;
   }
 
   if (lowerPath.endsWith(".rpgmvp")) {
-    add(pathWithExtension(normalized, ".png_"));
-    add(pathWithExtension(normalized, ".png__"));
-    add(pathWithExtension(normalized, ".png___"));
-    add(pathWithExtension(normalized, ".png"));
+    for (const encryptedSuffix of ENCRYPTED_IMAGE_SUFFIXES) add(pathWithExtension(normalized, encryptedSuffix));
+    for (const imageExtension of PLAIN_IMAGE_EXTENSIONS) add(pathWithExtension(normalized, imageExtension));
     return aliases;
   }
 
-  for (const encryptedSuffix of [".png_", ".png__", ".png___"]) {
+  for (const encryptedSuffix of ENCRYPTED_IMAGE_SUFFIXES) {
     if (!lowerPath.endsWith(encryptedSuffix)) continue;
     const stem = normalized.slice(0, -encryptedSuffix.length);
     add(stem + ".rpgmvp");
-    add(stem + ".png_");
-    add(stem + ".png__");
-    add(stem + ".png___");
-    add(stem + ".png");
+    for (const candidateSuffix of ENCRYPTED_IMAGE_SUFFIXES) add(stem + candidateSuffix);
+    for (const imageExtension of PLAIN_IMAGE_EXTENSIONS) add(stem + imageExtension);
     return aliases;
   }
 
-  for (const [sourceExtension, fallbackExtension] of [
-    [".ogg", ".rpgmvo"],
-    [".rpgmvo", ".ogg"],
-    [".m4a", ".rpgmvm"],
-    [".rpgmvm", ".m4a"],
-    [".webm", ".mp4"],
-    [".mp4", ".webm"],
-  ]) {
-    if (!lowerUnsuffixedPath.endsWith(sourceExtension)) continue;
-    const fallbackPath = pathWithExtension(unsuffixedPath, fallbackExtension);
+  if (PLAIN_AUDIO_EXTENSIONS.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
     add(unsuffixedPath);
     for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
-    add(fallbackPath);
-    if (fallbackPath) {
-      for (const candidate of suffixedPathCandidates(fallbackPath)) {
-        add(candidate);
+    for (const encryptedExtension of ENCRYPTED_AUDIO_EXTENSIONS) {
+      const encryptedPath = pathWithExtension(unsuffixedPath, encryptedExtension);
+      add(encryptedPath);
+      if (encryptedPath) {
+        for (const candidate of suffixedPathCandidates(encryptedPath)) add(candidate);
+      }
+    }
+    return aliases;
+  }
+
+  if (ENCRYPTED_AUDIO_EXTENSIONS.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    for (const plainExtension of PLAIN_AUDIO_EXTENSIONS) {
+      const plainPath = pathWithExtension(unsuffixedPath, plainExtension);
+      add(plainPath);
+      if (plainPath) {
+        for (const candidate of suffixedPathCandidates(plainPath)) add(candidate);
+      }
+    }
+    return aliases;
+  }
+
+  if (PLAIN_VIDEO_EXTENSIONS.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    for (const videoExtension of PLAIN_VIDEO_EXTENSIONS) {
+      const videoPath = pathWithExtension(unsuffixedPath, videoExtension);
+      add(videoPath);
+      if (videoPath) {
+        for (const candidate of suffixedPathCandidates(videoPath)) {
+          add(candidate);
+        }
       }
     }
     return aliases;
@@ -596,24 +632,31 @@ function pathHasExtension(path, extension) {
 }
 
 function isPlainImagePath(path) {
-  return path.toLowerCase().endsWith(".png");
+  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  return PLAIN_IMAGE_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
 }
 
 function isPlainAudioPath(path) {
   const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
-  return lowerPath.endsWith(".ogg") || lowerPath.endsWith(".m4a");
+  return PLAIN_AUDIO_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
 }
 
 function isPlainVideoPath(path) {
   const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
-  return lowerPath.endsWith(".webm") || lowerPath.endsWith(".mp4");
+  return PLAIN_VIDEO_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
 }
 
 function plainMimeForPath(path) {
   const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
   if (lowerPath.endsWith(".png")) return "image/png";
+  if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) return "image/jpeg";
+  if (lowerPath.endsWith(".webp")) return "image/webp";
+  if (lowerPath.endsWith(".gif")) return "image/gif";
   if (lowerPath.endsWith(".ogg")) return "audio/ogg";
+  if (lowerPath.endsWith(".oga")) return "audio/ogg";
   if (lowerPath.endsWith(".m4a")) return "audio/mp4";
+  if (lowerPath.endsWith(".mp3")) return "audio/mpeg";
+  if (lowerPath.endsWith(".wav")) return "audio/wav";
   if (lowerPath.endsWith(".webm")) return "video/webm";
   if (lowerPath.endsWith(".mp4")) return "video/mp4";
   return undefined;
@@ -645,20 +688,14 @@ function isPlainAssetPath(path) {
 function encryptedRequestPlainFallbackExtension(requestedPath, matchedPath) {
   if (!isEncryptedAssetPath(requestedPath)) return null;
 
-  for (const [encryptedExtension, plainExtension] of [
-    [".rpgmvp", ".png"],
-    [".png_", ".png"],
-    [".png__", ".png"],
-    [".png___", ".png"],
-    [".rpgmvo", ".ogg"],
-    [".rpgmvm", ".m4a"],
-  ]) {
-    if (
-      pathHasExtension(requestedPath, encryptedExtension) &&
-      pathHasExtension(matchedPath, plainExtension)
-    ) {
-      return plainExtension;
-    }
+  if (isEncryptedImagePath(requestedPath) && isPlainImagePath(matchedPath)) {
+    const lowerMatchedPath = pathWithoutSuffixMarkers(matchedPath).toLowerCase();
+    return PLAIN_IMAGE_EXTENSIONS.find((extension) => lowerMatchedPath.endsWith(extension)) || ".png";
+  }
+
+  if (isEncryptedAudioPath(requestedPath) && isPlainAudioPath(matchedPath)) {
+    const lowerMatchedPath = pathWithoutSuffixMarkers(matchedPath).toLowerCase();
+    return PLAIN_AUDIO_EXTENSIONS.find((extension) => lowerMatchedPath.endsWith(extension)) || ".ogg";
   }
 
   return null;
@@ -671,16 +708,7 @@ function plainRequestEncryptedFallbackMime(requestedPath, matchedPath) {
   if (isPlainImagePath(requestedPath) && isEncryptedImagePath(matchedPath)) {
     return plainMimeForPath(requestedPath);
   }
-  if (
-    pathHasExtension(requestedPath, ".ogg") &&
-    pathHasExtension(matchedPath, ".rpgmvo")
-  ) {
-    return plainMimeForPath(requestedPath);
-  }
-  if (
-    pathHasExtension(requestedPath, ".m4a") &&
-    pathHasExtension(matchedPath, ".rpgmvm")
-  ) {
+  if (isPlainAudioPath(requestedPath) && isEncryptedAudioPath(matchedPath)) {
     return plainMimeForPath(requestedPath);
   }
   return undefined;
@@ -692,6 +720,43 @@ function bytesStartWith(bytes, prefix) {
     if (bytes[index] !== prefix[index]) return false;
   }
   return true;
+}
+
+function imageMimeForBytes(bytes) {
+  if (!bytes) return undefined;
+  if (bytesStartWith(bytes, PNG_HEADER_BYTES)) return "image/png";
+  if (bytesStartWith(bytes, JPEG_HEADER_BYTES)) return "image/jpeg";
+  if (bytesStartWith(bytes, GIF87A_HEADER_BYTES) || bytesStartWith(bytes, GIF89A_HEADER_BYTES)) {
+    return "image/gif";
+  }
+  if (
+    bytes.byteLength >= 12 &&
+    bytesStartWith(bytes, WEBP_RIFF_HEADER_BYTES) &&
+    bytesStartWith(bytes.slice(8, 12), WEBP_WEBP_HEADER_BYTES)
+  ) {
+    return "image/webp";
+  }
+  return undefined;
+}
+
+function mediaMimeForBytes(bytes, fallbackMime) {
+  const imageMime = imageMimeForBytes(bytes);
+  if (imageMime) return imageMime;
+  if (bytesStartWith(bytes, OGG_HEADER_BYTES)) return "audio/ogg";
+  if (bytesStartWith(bytes, ID3_HEADER_BYTES)) return "audio/mpeg";
+  if (bytes.byteLength >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) return "audio/mpeg";
+  if (
+    bytes.byteLength >= 12 &&
+    bytesStartWith(bytes, RIFF_HEADER_BYTES) &&
+    bytesStartWith(bytes.slice(8, 12), WAVE_HEADER_BYTES)
+  ) {
+    return "audio/wav";
+  }
+  if (bytesStartWith(bytes, EBML_HEADER_BYTES)) return "video/webm";
+  if (bytes.byteLength >= 12 && bytesStartWith(bytes.slice(4, 8), FTYP_HEADER_BYTES)) {
+    return fallbackMime === "audio/mp4" || fallbackMime === "video/mp4" ? fallbackMime : "video/mp4";
+  }
+  return fallbackMime;
 }
 
 function bytesFromHex(value) {
@@ -796,9 +861,10 @@ async function transformAssetBlobForRequest(gameId, match, blob, requestClientId
       }),
     };
   }
+  const mime = mediaMimeForBytes(decrypted, decryptedMime);
   return {
-    blob: new Blob([decrypted], { type: decryptedMime }),
-    mime: decryptedMime,
+    blob: new Blob([decrypted], { type: mime }),
+    mime,
   };
 }
 

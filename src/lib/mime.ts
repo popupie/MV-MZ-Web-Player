@@ -40,7 +40,7 @@ const mimeByExtension = new Map<string, string>([
   ["woff", "font/woff"],
   ["woff2", "font/woff2"],
   ["rpgmvp", "image/png"],
-  ["rpgmvm", "audio/ogg"],
+  ["rpgmvm", "audio/mp4"],
   ["rpgmvo", "audio/ogg"],
   ["rpgsave", "application/octet-stream"],
   ["rmmzsave", "application/octet-stream"]

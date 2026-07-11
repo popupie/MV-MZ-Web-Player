@@ -126,6 +126,12 @@ function pathWithoutSuffixMarkers(path: string): string {
   return path.replace(/_+$/u, "");
 }
 
+const plainImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".gif"] as const;
+const encryptedImageSuffixes = [".png_", ".png__", ".png___"] as const;
+const plainAudioExtensions = [".ogg", ".m4a", ".mp3", ".wav", ".oga"] as const;
+const encryptedAudioExtensions = [".rpgmvo", ".rpgmvm"] as const;
+const plainVideoExtensions = [".webm", ".mp4"] as const;
+
 export function rpgMakerAssetPathAliases(path: string): string[] {
   const normalized = normalizeStoredPath(path);
   if (!normalized) return [];
@@ -141,49 +147,66 @@ export function rpgMakerAssetPathAliases(path: string): string[] {
     }
   }
 
-  if (lowerPath.endsWith(".png")) {
-    const stem = normalized.slice(0, -".png".length);
+  for (const imageExtension of plainImageExtensions) {
+    if (!lowerPath.endsWith(imageExtension)) continue;
+    const stem = normalized.slice(0, -imageExtension.length);
     add(`${stem}.rpgmvp`);
-    add(`${stem}.png_`);
-    add(`${stem}.png__`);
-    add(`${stem}.png___`);
+    if (imageExtension === ".png") {
+      for (const encryptedSuffix of encryptedImageSuffixes) add(`${stem}${encryptedSuffix}`);
+    }
     return aliases;
   }
 
   if (lowerPath.endsWith(".rpgmvp")) {
-    add(pathWithExtension(normalized, ".png_"));
-    add(pathWithExtension(normalized, ".png__"));
-    add(pathWithExtension(normalized, ".png___"));
-    add(pathWithExtension(normalized, ".png"));
+    for (const encryptedSuffix of encryptedImageSuffixes) add(pathWithExtension(normalized, encryptedSuffix));
+    for (const imageExtension of plainImageExtensions) add(pathWithExtension(normalized, imageExtension));
     return aliases;
   }
 
-  for (const encryptedSuffix of [".png_", ".png__", ".png___"]) {
+  for (const encryptedSuffix of encryptedImageSuffixes) {
     if (!lowerPath.endsWith(encryptedSuffix)) continue;
     const stem = normalized.slice(0, -encryptedSuffix.length);
     add(`${stem}.rpgmvp`);
-    add(`${stem}.png_`);
-    add(`${stem}.png__`);
-    add(`${stem}.png___`);
-    add(`${stem}.png`);
+    for (const candidateSuffix of encryptedImageSuffixes) add(`${stem}${candidateSuffix}`);
+    for (const imageExtension of plainImageExtensions) add(`${stem}${imageExtension}`);
     return aliases;
   }
 
-  for (const [sourceExtension, fallbackExtension] of [
-    [".ogg", ".rpgmvo"],
-    [".rpgmvo", ".ogg"],
-    [".m4a", ".rpgmvm"],
-    [".rpgmvm", ".m4a"],
-    [".webm", ".mp4"],
-    [".mp4", ".webm"],
-  ] as const) {
-    if (!lowerUnsuffixedPath.endsWith(sourceExtension)) continue;
-    const fallbackPath = pathWithExtension(unsuffixedPath, fallbackExtension);
+  if (plainAudioExtensions.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
     add(unsuffixedPath);
     for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
-    add(fallbackPath);
-    if (fallbackPath) {
-      for (const candidate of suffixedPathCandidates(fallbackPath)) add(candidate);
+    for (const encryptedExtension of encryptedAudioExtensions) {
+      const encryptedPath = pathWithExtension(unsuffixedPath, encryptedExtension);
+      add(encryptedPath);
+      if (encryptedPath) {
+        for (const candidate of suffixedPathCandidates(encryptedPath)) add(candidate);
+      }
+    }
+    return aliases;
+  }
+
+  if (encryptedAudioExtensions.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    for (const plainExtension of plainAudioExtensions) {
+      const plainPath = pathWithExtension(unsuffixedPath, plainExtension);
+      add(plainPath);
+      if (plainPath) {
+        for (const candidate of suffixedPathCandidates(plainPath)) add(candidate);
+      }
+    }
+    return aliases;
+  }
+
+  if (plainVideoExtensions.some((extension) => lowerUnsuffixedPath.endsWith(extension))) {
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    for (const videoExtension of plainVideoExtensions) {
+      const videoPath = pathWithExtension(unsuffixedPath, videoExtension);
+      add(videoPath);
+      if (videoPath) {
+        for (const candidate of suffixedPathCandidates(videoPath)) add(candidate);
+      }
     }
     return aliases;
   }

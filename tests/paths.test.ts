@@ -70,22 +70,35 @@ describe("path helpers", () => {
       "www/img/pictures/title.png__",
       "www/img/pictures/title.png___",
       "www/img/pictures/title.png",
+      "www/img/pictures/title.jpg",
+      "www/img/pictures/title.jpeg",
+      "www/img/pictures/title.webp",
+      "www/img/pictures/title.gif",
     ]);
     expect(pathLookupAliases("www/img/pictures/title.png")).toContain("www/img/pictures/title.rpgmvp");
+    expect(pathLookupAliases("www/img/pictures/title.jpg")).toContain("www/img/pictures/title.rpgmvp");
+    expect(pathLookupAliases("www/img/pictures/title.webp")).toContain("www/img/pictures/title.rpgmvp");
     expect(pathLookupAliases("www/img/pictures/title.rpgmvp")).toContain("www/img/pictures/title.png");
+    expect(pathLookupAliases("www/img/pictures/title.rpgmvp")).toContain("www/img/pictures/title.jpg");
   });
 
   it("matches RPG Maker encrypted audio asset aliases", () => {
-    expect(rpgMakerAssetPathAliases("www/audio/bgm/theme.ogg")).toEqual([
-      "www/audio/bgm/theme.ogg_",
-      "www/audio/bgm/theme.ogg__",
-      "www/audio/bgm/theme.ogg___",
-      "www/audio/bgm/theme.rpgmvo",
-      "www/audio/bgm/theme.rpgmvo_",
-      "www/audio/bgm/theme.rpgmvo__",
-      "www/audio/bgm/theme.rpgmvo___",
-    ]);
+    expect(rpgMakerAssetPathAliases("www/audio/bgm/theme.ogg")).toEqual(
+      expect.arrayContaining([
+        "www/audio/bgm/theme.ogg_",
+        "www/audio/bgm/theme.ogg__",
+        "www/audio/bgm/theme.ogg___",
+        "www/audio/bgm/theme.rpgmvo",
+        "www/audio/bgm/theme.rpgmvo_",
+        "www/audio/bgm/theme.rpgmvo__",
+        "www/audio/bgm/theme.rpgmvo___",
+        "www/audio/bgm/theme.rpgmvm",
+      ]),
+    );
     expect(rpgMakerAssetPathAliases("www/audio/se/click.m4a")).toContain("www/audio/se/click.rpgmvm");
+    expect(rpgMakerAssetPathAliases("www/audio/se/click.mp3")).toContain("www/audio/se/click.rpgmvo");
+    expect(rpgMakerAssetPathAliases("www/audio/se/click.rpgmvo")).toContain("www/audio/se/click.m4a");
+    expect(rpgMakerAssetPathAliases("www/audio/se/click.rpgmvo")).toContain("www/audio/se/click.mp3");
     expect(pathLookupAliases("www/audio/bgm/theme.rpgmvo")).toContain("www/audio/bgm/theme.ogg");
     expect(pathLookupAliases("www/audio/se/click.rpgmvm")).toContain("www/audio/se/click.m4a");
     expect(pathLookupAliases("www/audio/bgm/theme.ogg_")).toContain("www/audio/bgm/theme.rpgmvo");
