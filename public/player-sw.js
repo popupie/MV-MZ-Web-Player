@@ -7,9 +7,15 @@ const HANDLE_STORE = "handles";
 const PLAYER_DESKTOP_RUNTIME_VERSION = "desktop-api-1";
 const PLAYER_BRIDGE_RUNTIME_VERSION = "bridge-api-1";
 const SESSION_FILE_TIMEOUT_MS = 10000;
+const EMPTY_SOURCE_MAP_TEXT = "{\"version\":3,\"sources\":[],\"mappings\":\"\"}";
+const RPG_MAKER_ENCRYPTED_HEADER_BYTES = Uint8Array.from([
+  0x52, 0x50, 0x47, 0x4d, 0x56, 0x00, 0x00, 0x00,
+  0x00, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
 let dbPromise;
 const gameCache = new Map();
 const fileCache = new Map();
+const encryptionKeyCache = new Map();
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -35,9 +41,31 @@ self.addEventListener("message", (event) => {
   ) {
     gameCache.delete(event.data.gameId);
     fileCache.delete(event.data.gameId);
+    encryptionKeyCache.delete(event.data.gameId);
+    return;
+  }
+  if (event.data && event.data.type === "clear-player-cache") {
+    event.waitUntil(clearPlayerCache(event));
     return;
   }
 });
+
+async function clearPlayerCache(event) {
+  gameCache.clear();
+  fileCache.clear();
+  encryptionKeyCache.clear();
+  try {
+    const db = dbPromise ? await dbPromise : undefined;
+    if (db) db.close();
+  } catch {
+    // The database may have failed to open; clearing cache maps is still useful.
+  } finally {
+    dbPromise = undefined;
+  }
+  if (event.ports && event.ports[0]) {
+    event.ports[0].postMessage({ type: "clear-player-cache-done" });
+  }
+}
 
 function openDb() {
   if (dbPromise) return dbPromise;
@@ -64,6 +92,7 @@ function openDb() {
         dbPromise = undefined;
         gameCache.clear();
         fileCache.clear();
+        encryptionKeyCache.clear();
       };
       resolve(db);
     };
@@ -197,6 +226,87 @@ function mojibakePathAliases(path) {
   return aliases;
 }
 
+function pathWithExtension(path, extension) {
+  const index = path.lastIndexOf(".");
+  if (index < 0) return undefined;
+  return path.slice(0, index) + extension;
+}
+
+function suffixedPathCandidates(path) {
+  return [path + "_", path + "__", path + "___"];
+}
+
+function pathWithoutSuffixMarkers(path) {
+  return path.replace(/_+$/u, "");
+}
+
+function rpgMakerAssetPathAliases(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return [];
+
+  const lowerPath = normalized.toLowerCase();
+  const unsuffixedPath = pathWithoutSuffixMarkers(normalized);
+  const lowerUnsuffixedPath = unsuffixedPath.toLowerCase();
+  const aliases = [];
+
+  function add(candidate) {
+    if (candidate && candidate !== normalized && !aliases.includes(candidate)) {
+      aliases.push(candidate);
+    }
+  }
+
+  if (lowerPath.endsWith(".png")) {
+    const stem = normalized.slice(0, -".png".length);
+    add(stem + ".rpgmvp");
+    add(stem + ".png_");
+    add(stem + ".png__");
+    add(stem + ".png___");
+    return aliases;
+  }
+
+  if (lowerPath.endsWith(".rpgmvp")) {
+    add(pathWithExtension(normalized, ".png_"));
+    add(pathWithExtension(normalized, ".png__"));
+    add(pathWithExtension(normalized, ".png___"));
+    add(pathWithExtension(normalized, ".png"));
+    return aliases;
+  }
+
+  for (const encryptedSuffix of [".png_", ".png__", ".png___"]) {
+    if (!lowerPath.endsWith(encryptedSuffix)) continue;
+    const stem = normalized.slice(0, -encryptedSuffix.length);
+    add(stem + ".rpgmvp");
+    add(stem + ".png_");
+    add(stem + ".png__");
+    add(stem + ".png___");
+    add(stem + ".png");
+    return aliases;
+  }
+
+  for (const [sourceExtension, fallbackExtension] of [
+    [".ogg", ".rpgmvo"],
+    [".rpgmvo", ".ogg"],
+    [".m4a", ".rpgmvm"],
+    [".rpgmvm", ".m4a"],
+    [".webm", ".mp4"],
+    [".mp4", ".webm"],
+  ]) {
+    if (!lowerUnsuffixedPath.endsWith(sourceExtension)) continue;
+    const fallbackPath = pathWithExtension(unsuffixedPath, fallbackExtension);
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    add(fallbackPath);
+    if (fallbackPath) {
+      for (const candidate of suffixedPathCandidates(fallbackPath)) {
+        add(candidate);
+      }
+    }
+    return aliases;
+  }
+
+  return aliases;
+}
+
 function pathLookupAliases(path) {
   const normalized = normalizePath(path);
   if (!normalized) return [];
@@ -209,10 +319,23 @@ function pathLookupAliases(path) {
     seen.add(candidate);
   }
 
-  for (const alias of unicodePathAliases(normalized)) addAlias(alias);
+  const baseCandidates = [normalized];
+  for (const alias of unicodePathAliases(normalized)) baseCandidates.push(alias);
   for (const alias of mojibakePathAliases(normalized)) {
-    addAlias(alias);
-    for (const unicodeAlias of unicodePathAliases(alias)) addAlias(unicodeAlias);
+    baseCandidates.push(alias);
+    for (const unicodeAlias of unicodePathAliases(alias)) {
+      baseCandidates.push(unicodeAlias);
+    }
+  }
+
+  for (const candidate of baseCandidates) {
+    addAlias(candidate);
+    for (const assetAlias of rpgMakerAssetPathAliases(candidate)) {
+      addAlias(assetAlias);
+      for (const unicodeAlias of unicodePathAliases(assetAlias)) {
+        addAlias(unicodeAlias);
+      }
+    }
   }
 
   return aliases;
@@ -222,20 +345,41 @@ function setIfAbsent(map, key, value) {
   if (key && !map.has(key)) map.set(key, value);
 }
 
-function getByPathWithAliases(map, path) {
+function getPathMatchWithAliases(map, path) {
   const normalized = normalizePath(path);
   const candidates = [normalized, ...pathLookupAliases(normalized)];
 
   for (const candidate of candidates) {
     const record =
       map.exact.get(candidate) ||
-      map.lower.get(candidate.toLowerCase()) ||
+      map.lower.get(candidate.toLowerCase());
+    if (record) {
+      return {
+        record,
+        requestedPath: normalized,
+        matchedPath: normalizePath(record.path),
+      };
+    }
+  }
+
+  for (const candidate of candidates) {
+    const record =
       map.alias.get(candidate) ||
       map.lowerAlias.get(candidate.toLowerCase());
-    if (record) return record;
+    if (record) {
+      return {
+        record,
+        requestedPath: normalized,
+        matchedPath: normalizePath(record.path),
+      };
+    }
   }
 
   return undefined;
+}
+
+function getByPathWithAliases(map, path) {
+  return getPathMatchWithAliases(map, path)?.record;
 }
 
 async function getGame(gameId) {
@@ -284,6 +428,11 @@ async function getGameFileMap(gameId) {
 async function getStoredFile(gameId, path) {
   const map = await getGameFileMap(gameId);
   return getByPathWithAliases(map, path);
+}
+
+async function getStoredFileMatch(gameId, path) {
+  const map = await getGameFileMap(gameId);
+  return getPathMatchWithAliases(map, path);
 }
 
 async function getGameFiles(gameId) {
@@ -413,6 +562,246 @@ async function getSessionFileBlob(gameId, path, requestClientId) {
   return undefined;
 }
 
+async function getBlobForStoredRecord(gameId, record, requestClientId) {
+  if (record.storageKind === "local-folder") {
+    return getLocalFolderBlob(gameId, record.storageRef || record.path);
+  }
+  if (record.storageKind === "session-file") {
+    return getSessionFileBlob(
+      gameId,
+      record.storageRef || record.path,
+      requestClientId,
+    );
+  }
+  if (record.storageKind === "opfs") {
+    return getOpfsBlob(gameId, record.path);
+  }
+  return getIndexedDbBlob(record.storageRef);
+}
+
+function isMissingPluginMarkerPath(path) {
+  const normalized = normalizePath(path);
+  const index = normalized.lastIndexOf("/");
+  const directory = index < 0 ? "" : normalized.slice(0, index);
+  const filename = index < 0 ? normalized : normalized.slice(index + 1);
+  return (
+    (directory === "js/plugins" || directory === "www/js/plugins") &&
+    filename.toLowerCase().endsWith(".js") &&
+    filename.slice(0, -".js".length).trim().includes("■")
+  );
+}
+
+function pathHasExtension(path, extension) {
+  return pathWithoutSuffixMarkers(path).toLowerCase().endsWith(extension);
+}
+
+function isPlainImagePath(path) {
+  return path.toLowerCase().endsWith(".png");
+}
+
+function isPlainAudioPath(path) {
+  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  return lowerPath.endsWith(".ogg") || lowerPath.endsWith(".m4a");
+}
+
+function isPlainVideoPath(path) {
+  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  return lowerPath.endsWith(".webm") || lowerPath.endsWith(".mp4");
+}
+
+function plainMimeForPath(path) {
+  const lowerPath = pathWithoutSuffixMarkers(path).toLowerCase();
+  if (lowerPath.endsWith(".png")) return "image/png";
+  if (lowerPath.endsWith(".ogg")) return "audio/ogg";
+  if (lowerPath.endsWith(".m4a")) return "audio/mp4";
+  if (lowerPath.endsWith(".webm")) return "video/webm";
+  if (lowerPath.endsWith(".mp4")) return "video/mp4";
+  return undefined;
+}
+
+function isEncryptedImagePath(path) {
+  const lowerPath = path.toLowerCase();
+  return [".rpgmvp", ".png_", ".png__", ".png___"].some((extension) =>
+    lowerPath.endsWith(extension),
+  );
+}
+
+function isEncryptedAudioPath(path) {
+  const lowerPath = path.toLowerCase();
+  return (
+    pathHasExtension(lowerPath, ".rpgmvo") ||
+    pathHasExtension(lowerPath, ".rpgmvm")
+  );
+}
+
+function isEncryptedAssetPath(path) {
+  return isEncryptedImagePath(path) || isEncryptedAudioPath(path);
+}
+
+function isPlainAssetPath(path) {
+  return isPlainImagePath(path) || isPlainAudioPath(path) || isPlainVideoPath(path);
+}
+
+function encryptedRequestPlainFallbackExtension(requestedPath, matchedPath) {
+  if (!isEncryptedAssetPath(requestedPath)) return null;
+
+  for (const [encryptedExtension, plainExtension] of [
+    [".rpgmvp", ".png"],
+    [".png_", ".png"],
+    [".png__", ".png"],
+    [".png___", ".png"],
+    [".rpgmvo", ".ogg"],
+    [".rpgmvm", ".m4a"],
+  ]) {
+    if (
+      pathHasExtension(requestedPath, encryptedExtension) &&
+      pathHasExtension(matchedPath, plainExtension)
+    ) {
+      return plainExtension;
+    }
+  }
+
+  return null;
+}
+
+function plainRequestEncryptedFallbackMime(requestedPath, matchedPath) {
+  if (!isPlainAssetPath(requestedPath) || !isEncryptedAssetPath(matchedPath)) {
+    return undefined;
+  }
+  if (isPlainImagePath(requestedPath) && isEncryptedImagePath(matchedPath)) {
+    return plainMimeForPath(requestedPath);
+  }
+  if (
+    pathHasExtension(requestedPath, ".ogg") &&
+    pathHasExtension(matchedPath, ".rpgmvo")
+  ) {
+    return plainMimeForPath(requestedPath);
+  }
+  if (
+    pathHasExtension(requestedPath, ".m4a") &&
+    pathHasExtension(matchedPath, ".rpgmvm")
+  ) {
+    return plainMimeForPath(requestedPath);
+  }
+  return undefined;
+}
+
+function bytesStartWith(bytes, prefix) {
+  if (!bytes || bytes.byteLength < prefix.byteLength) return false;
+  for (let index = 0; index < prefix.byteLength; index += 1) {
+    if (bytes[index] !== prefix[index]) return false;
+  }
+  return true;
+}
+
+function bytesFromHex(value) {
+  const clean = String(value || "").trim();
+  if (!/^[0-9a-fA-F]+$/u.test(clean) || clean.length % 2 !== 0) {
+    return undefined;
+  }
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let index = 0; index < clean.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(clean.slice(index, index + 2), 16);
+  }
+  return bytes;
+}
+
+async function readRpgMakerEncryptionKey(gameId, requestClientId) {
+  for (const systemPath of ["www/data/System.json", "data/System.json"]) {
+    const systemRecord = await getStoredFile(gameId, systemPath);
+    if (!systemRecord) continue;
+
+    const blob = await getBlobForStoredRecord(gameId, systemRecord, requestClientId);
+    if (!blob) continue;
+
+    try {
+      const system = JSON.parse(await blob.text());
+      const key = bytesFromHex(system?.encryptionKey);
+      if (key && key.byteLength >= 16) return key.slice(0, 16);
+    } catch {
+      // Keep looking; some games omit or corrupt System.json encryption data.
+    }
+  }
+  return null;
+}
+
+async function getRpgMakerEncryptionKey(gameId, requestClientId) {
+  let promise = encryptionKeyCache.get(gameId);
+  if (!promise) {
+    promise = readRpgMakerEncryptionKey(gameId, requestClientId);
+    encryptionKeyCache.set(gameId, promise);
+  }
+  return promise;
+}
+
+function encryptRpgMakerAsset(bytes, key) {
+  const encrypted = new Uint8Array(RPG_MAKER_ENCRYPTED_HEADER_BYTES.byteLength + bytes.byteLength);
+  encrypted.set(RPG_MAKER_ENCRYPTED_HEADER_BYTES, 0);
+  encrypted.set(bytes, RPG_MAKER_ENCRYPTED_HEADER_BYTES.byteLength);
+  const bodyOffset = RPG_MAKER_ENCRYPTED_HEADER_BYTES.byteLength;
+  for (let index = 0; index < Math.min(16, bytes.byteLength, key.byteLength); index += 1) {
+    encrypted[bodyOffset + index] = bytes[index] ^ key[index];
+  }
+  return encrypted;
+}
+
+function decryptRpgMakerAsset(bytes, key) {
+  if (!bytesStartWith(bytes, RPG_MAKER_ENCRYPTED_HEADER_BYTES)) return undefined;
+  const body = bytes.slice(RPG_MAKER_ENCRYPTED_HEADER_BYTES.byteLength);
+  for (let index = 0; index < Math.min(16, body.byteLength, key.byteLength); index += 1) {
+    body[index] ^= key[index];
+  }
+  return body;
+}
+
+async function transformAssetBlobForRequest(gameId, match, blob, requestClientId) {
+  const encryptedPlainExtension = encryptedRequestPlainFallbackExtension(
+    match.requestedPath,
+    match.matchedPath,
+  );
+  const decryptedMime = plainRequestEncryptedFallbackMime(
+    match.requestedPath,
+    match.matchedPath,
+  );
+  if (!encryptedPlainExtension && !decryptedMime) {
+    return { blob };
+  }
+
+  const key = await getRpgMakerEncryptionKey(gameId, requestClientId);
+  if (!key) {
+    return {
+      error: new Response("RPG Maker encryption key not found", { status: 404 }),
+    };
+  }
+
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  if (encryptedPlainExtension) {
+    return {
+      blob: new Blob([encryptRpgMakerAsset(bytes, key)], {
+        type: isEncryptedImagePath(match.requestedPath)
+          ? "application/octet-stream"
+          : blob.type,
+      }),
+      mime: isEncryptedImagePath(match.requestedPath)
+        ? "application/octet-stream"
+        : undefined,
+    };
+  }
+
+  const decrypted = decryptRpgMakerAsset(bytes, key);
+  if (!decrypted) {
+    return {
+      error: new Response("Encrypted RPG Maker asset fallback has an invalid header", {
+        status: 404,
+      }),
+    };
+  }
+  return {
+    blob: new Blob([decrypted], { type: decryptedMime }),
+    mime: decryptedMime,
+  };
+}
+
 async function serveGameFile(url, request) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -427,21 +816,31 @@ async function serveGameFile(url, request) {
   if (!game) return new Response("Game not found", { status: 404 });
 
   const path = requestedPath || game.entryPath || "index.html";
-  const record = await getStoredFile(gameId, path);
-  if (!record) return new Response("File not found", { status: 404 });
+  const match = await getStoredFileMatch(gameId, path);
+  if (!match) {
+    if (path.endsWith(".map")) {
+      return new Response(request.method === "HEAD" ? null : EMPTY_SOURCE_MAP_TEXT, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    if (isMissingPluginMarkerPath(path)) {
+      return new Response(request.method === "HEAD" ? null : "", {
+        status: 200,
+        headers: {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    return new Response("File not found", { status: 404 });
+  }
 
-  const blob =
-    record.storageKind === "local-folder"
-      ? await getLocalFolderBlob(gameId, record.storageRef || record.path)
-      : record.storageKind === "session-file"
-        ? await getSessionFileBlob(
-            gameId,
-            record.storageRef || record.path,
-            request.clientId,
-          )
-        : record.storageKind === "opfs"
-          ? await getOpfsBlob(gameId, record.path)
-          : await getIndexedDbBlob(record.storageRef);
+  const record = match.record;
+  const blob = await getBlobForStoredRecord(gameId, record, request.clientId);
   if (!blob) {
     const message =
       record.storageKind === "session-file"
@@ -450,8 +849,22 @@ async function serveGameFile(url, request) {
     return new Response(message, { status: 404 });
   }
 
+  const transformed = await transformAssetBlobForRequest(
+    gameId,
+    match,
+    blob,
+    request.clientId,
+  );
+  if (transformed.error) return transformed.error;
+  const responseBlob = transformed.blob;
+  const contentType =
+    transformed.mime ||
+    record.mime ||
+    responseBlob.type ||
+    blob.type ||
+    "application/octet-stream";
   const headers = new Headers({
-    "Content-Type": record.mime || blob.type || "application/octet-stream",
+    "Content-Type": contentType,
     "Cache-Control": "no-store",
   });
 
@@ -459,7 +872,7 @@ async function serveGameFile(url, request) {
     return new Response(null, { status: 200, headers });
 
   if ((record.mime || "").startsWith("text/html")) {
-    const html = await blob.text();
+    const html = await responseBlob.text();
     const files = await getGameFiles(gameId);
     return new Response(injectBridge(html, game, files), {
       status: 200,
@@ -467,7 +880,7 @@ async function serveGameFile(url, request) {
     });
   }
 
-  return new Response(blob, { status: 200, headers });
+  return new Response(responseBlob, { status: 200, headers });
 }
 
 function jsonForScript(value) {

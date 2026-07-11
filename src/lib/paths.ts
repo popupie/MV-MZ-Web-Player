@@ -112,6 +112,85 @@ export function mojibakePathAliases(path: string): string[] {
   return aliases;
 }
 
+function pathWithExtension(path: string, extension: string): string | undefined {
+  const index = path.lastIndexOf(".");
+  if (index < 0) return undefined;
+  return path.slice(0, index) + extension;
+}
+
+function suffixedPathCandidates(path: string): string[] {
+  return [`${path}_`, `${path}__`, `${path}___`];
+}
+
+function pathWithoutSuffixMarkers(path: string): string {
+  return path.replace(/_+$/u, "");
+}
+
+export function rpgMakerAssetPathAliases(path: string): string[] {
+  const normalized = normalizeStoredPath(path);
+  if (!normalized) return [];
+
+  const lowerPath = normalized.toLowerCase();
+  const unsuffixedPath = pathWithoutSuffixMarkers(normalized);
+  const lowerUnsuffixedPath = unsuffixedPath.toLowerCase();
+  const aliases: string[] = [];
+
+  function add(candidate: string | undefined) {
+    if (candidate && candidate !== normalized && !aliases.includes(candidate)) {
+      aliases.push(candidate);
+    }
+  }
+
+  if (lowerPath.endsWith(".png")) {
+    const stem = normalized.slice(0, -".png".length);
+    add(`${stem}.rpgmvp`);
+    add(`${stem}.png_`);
+    add(`${stem}.png__`);
+    add(`${stem}.png___`);
+    return aliases;
+  }
+
+  if (lowerPath.endsWith(".rpgmvp")) {
+    add(pathWithExtension(normalized, ".png_"));
+    add(pathWithExtension(normalized, ".png__"));
+    add(pathWithExtension(normalized, ".png___"));
+    add(pathWithExtension(normalized, ".png"));
+    return aliases;
+  }
+
+  for (const encryptedSuffix of [".png_", ".png__", ".png___"]) {
+    if (!lowerPath.endsWith(encryptedSuffix)) continue;
+    const stem = normalized.slice(0, -encryptedSuffix.length);
+    add(`${stem}.rpgmvp`);
+    add(`${stem}.png_`);
+    add(`${stem}.png__`);
+    add(`${stem}.png___`);
+    add(`${stem}.png`);
+    return aliases;
+  }
+
+  for (const [sourceExtension, fallbackExtension] of [
+    [".ogg", ".rpgmvo"],
+    [".rpgmvo", ".ogg"],
+    [".m4a", ".rpgmvm"],
+    [".rpgmvm", ".m4a"],
+    [".webm", ".mp4"],
+    [".mp4", ".webm"],
+  ] as const) {
+    if (!lowerUnsuffixedPath.endsWith(sourceExtension)) continue;
+    const fallbackPath = pathWithExtension(unsuffixedPath, fallbackExtension);
+    add(unsuffixedPath);
+    for (const candidate of suffixedPathCandidates(unsuffixedPath)) add(candidate);
+    add(fallbackPath);
+    if (fallbackPath) {
+      for (const candidate of suffixedPathCandidates(fallbackPath)) add(candidate);
+    }
+    return aliases;
+  }
+
+  return aliases;
+}
+
 export function pathLookupAliases(path: string): string[] {
   const normalized = normalizeStoredPath(path);
   if (!normalized) return [];
@@ -119,16 +198,25 @@ export function pathLookupAliases(path: string): string[] {
   const aliases: string[] = [];
   const seen = new Set([normalized]);
 
-  function addAlias(candidate: string) {
+  function addAlias(candidate: string | undefined) {
     if (!candidate || seen.has(candidate)) return;
     aliases.push(candidate);
     seen.add(candidate);
   }
 
-  for (const alias of unicodePathAliases(normalized)) addAlias(alias);
+  const baseCandidates: string[] = [normalized];
+  for (const alias of unicodePathAliases(normalized)) baseCandidates.push(alias);
   for (const alias of mojibakePathAliases(normalized)) {
-    addAlias(alias);
-    for (const unicodeAlias of unicodePathAliases(alias)) addAlias(unicodeAlias);
+    baseCandidates.push(alias);
+    for (const unicodeAlias of unicodePathAliases(alias)) baseCandidates.push(unicodeAlias);
+  }
+
+  for (const candidate of baseCandidates) {
+    addAlias(candidate);
+    for (const assetAlias of rpgMakerAssetPathAliases(candidate)) {
+      addAlias(assetAlias);
+      for (const unicodeAlias of unicodePathAliases(assetAlias)) addAlias(unicodeAlias);
+    }
   }
 
   return aliases;

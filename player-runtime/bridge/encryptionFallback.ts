@@ -31,6 +31,8 @@ export function isPngArrayBuffer(arrayBuffer) {
 }
 
 export function decryptImageArrayBufferWithFallback(arrayBuffer, defaultDecrypt) {
+  if (isPngArrayBuffer(arrayBuffer)) return arrayBuffer;
+
   let defaultResult;
   try {
     defaultResult = defaultDecrypt(arrayBuffer);

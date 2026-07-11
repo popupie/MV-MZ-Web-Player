@@ -1253,6 +1253,7 @@
     return startsWithBytes(new Uint8Array(arrayBuffer), PNG_HEADER_BYTES);
   }
   function decryptImageArrayBufferWithFallback(arrayBuffer, defaultDecrypt) {
+    if (isPngArrayBuffer(arrayBuffer)) return arrayBuffer;
     let defaultResult;
     try {
       defaultResult = defaultDecrypt(arrayBuffer);

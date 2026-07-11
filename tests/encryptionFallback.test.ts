@@ -26,6 +26,15 @@ describe("RPG Maker image encryption fallback", () => {
     expect(new Uint8Array(result)).toEqual(pngHeader);
   });
 
+  it("accepts already-plain PNG bytes served for encrypted image URLs", () => {
+    const result = decryptImageArrayBufferWithFallback(pngHeader.buffer, () => {
+      throw new Error("Header is wrong");
+    });
+
+    expect(result).toBe(pngHeader.buffer);
+    expect(isPngArrayBuffer(result)).toBe(true);
+  });
+
   it("repairs nonstandard encrypted image first blocks", () => {
     const encrypted = encryptedImageWithScrambledPngHeader();
     const result = decryptImageArrayBufferWithFallback(encrypted, (source: ArrayBuffer) => source.slice(16));
