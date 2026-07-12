@@ -125,6 +125,21 @@ describe("folder handle scanning", () => {
 
     expect(candidate.title).toBe("Selected Game");
   });
+
+  it("falls back to the nested game folder when the selected folder wraps it", async () => {
+    const handle = directoryHandle("Outer", {
+      Inner: directoryHandle("Inner", {
+        "index.html": fileHandle("index.html", 10),
+        data: directoryHandle("data", {
+          "System.json": fileHandle("System.json", JSON.stringify({ gameTitle: "" })),
+        }),
+      }),
+    });
+
+    const candidate = await candidateFromDirectoryHandle(handle);
+
+    expect(candidate.title).toBe("Inner");
+  });
 });
 
 describe("webkit folder scanning", () => {
@@ -171,6 +186,18 @@ describe("webkit folder scanning", () => {
     expect(candidate.title).toBe("Selected Game");
     expect(candidate.entryPath).toBe("index.html");
   });
+
+  it("falls back to the nested game folder for wrapped uploads with no game title", async () => {
+    const files = [
+      webkitFile("Outer/Inner/index.html", 10),
+      webkitFile("Outer/Inner/data/System.json", JSON.stringify({ gameTitle: "" })),
+    ];
+
+    const candidate = await candidateFromFolder(files, "Outer");
+
+    expect(candidate.title).toBe("Inner");
+    expect(candidate.entryPath).toBe("Outer/Inner/index.html");
+  });
 });
 
 describe("ZIP scanning", () => {
@@ -188,5 +215,21 @@ describe("ZIP scanning", () => {
 
     expect(candidate.title).toBe("Actual Game");
     expect(candidate.entryPath).toBe("index.html");
+  });
+
+  it("falls back to the nested game folder when the ZIP wraps it", async () => {
+    const zip = new JSZip();
+    zip.file("Outer/Inner/index.html", "");
+    zip.file("Outer/Inner/data/System.json", JSON.stringify({ gameTitle: "" }));
+    const bytes = await zip.generateAsync({ type: "uint8array" });
+    const file = Object.assign(bytes, {
+      name: "archive.zip",
+      size: bytes.byteLength,
+    }) as unknown as File;
+
+    const candidate = await candidateFromZip(file);
+
+    expect(candidate.title).toBe("Inner");
+    expect(candidate.entryPath).toBe("Outer/Inner/index.html");
   });
 });

@@ -44,6 +44,12 @@ const SYSTEM_JSON_PATH_RANKS = new Map([
   ["data/System.json", 0],
   ["www/data/System.json", 1],
 ]);
+const PROJECT_ROOT_PATH_SUFFIXES = [
+  { suffix: "data/System.json", trimSegments: 2 },
+  { suffix: "www/data/System.json", trimSegments: 3 },
+  { suffix: "index.html", trimSegments: 1 },
+  { suffix: "www/index.html", trimSegments: 2 },
+];
 const STRUCTURAL_FOLDER_TITLES = new Set(["www"]);
 
 function zipNameBytes(bytes: string[] | Uint8Array | Buffer): Uint8Array {
@@ -106,8 +112,37 @@ async function titleFromSystemJsonEntries<T extends { path: string }>(
   return "";
 }
 
+function projectFolderTitleFromPath(path: string): string {
+  const normalized = normalizeStoredPath(path);
+  if (!normalized) return "";
+
+  for (const { suffix, trimSegments } of PROJECT_ROOT_PATH_SUFFIXES) {
+    if (normalized !== suffix && !normalized.endsWith(`/${suffix}`)) continue;
+
+    const rootSegments = normalized.split("/").slice(0, -trimSegments);
+    const title = rootSegments.at(-1)?.trim() ?? "";
+    if (title && !STRUCTURAL_FOLDER_TITLES.has(title.toLowerCase())) {
+      return title;
+    }
+  }
+
+  return "";
+}
+
+function projectFolderTitle(paths: string[]): string {
+  for (const path of paths) {
+    const title = projectFolderTitleFromPath(path);
+    if (title) return title;
+  }
+
+  return "";
+}
+
 function candidateTitle(systemTitle: string, paths: string[], fallback: string): string {
   if (systemTitle) return systemTitle;
+
+  const projectTitle = projectFolderTitle(paths);
+  if (projectTitle) return projectTitle;
 
   const inferredTitle = titleFromEntry(paths, "");
   if (
