@@ -114,7 +114,10 @@ export function PlayerPanel({
                   <span>Focus sends keyboard input back to the game.</span>
                 </div>
 
-                <div className="home-control-cell home-control-cell-empty" aria-hidden="true" />
+                <div className="home-control-cell">
+                  <Icon name="shield" />
+                  <span>Guard blocks added keys from reaching the game while the overlay is active.</span>
+                </div>
                 <div className="home-control-cell">
                   <Icon name="fullscreen" />
                   <span>Fullscreen expands the play view.</span>

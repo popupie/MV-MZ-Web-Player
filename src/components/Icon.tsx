@@ -12,6 +12,7 @@ export type IconName =
   | "layers"
   | "logs"
   | "plus"
+  | "shield"
   | "trash"
   | "x";
 
@@ -82,6 +83,12 @@ export function Icon({ name }: { name: IconName }) {
       <>
         <path d="M12 5v14" />
         <path d="M5 12h14" />
+      </>
+    ),
+    shield: (
+      <>
+        <path d="M12 3 19 6v5c0 4.5-2.9 8.3-7 10-4.1-1.7-7-5.5-7-10V6l7-3Z" />
+        <path d="M9 12l2 2 4-4" />
       </>
     ),
     trash: (

@@ -650,7 +650,7 @@ progress::-moz-progress-bar {
   grid-template-columns: 30px minmax(0, 1fr);
   align-items: start;
   gap: 9px;
-  min-height: 52px;
+  min-height: 64px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 10px;
