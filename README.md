@@ -6,7 +6,7 @@ game files to a server.
 
 ## Demo
 
-[.github/assets/demo.mp4](.github/assets/demo.mp4)
+<video src=".github/assets/demo.mp4" controls></video>
 
 ## Use Case
 
