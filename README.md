@@ -6,10 +6,7 @@ game files to a server.
 
 ## Demo
 
-<video controls>
-  <source src=".github/assets/demo.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+[.github/assets/demo.mp4](.github/assets/demo.mp4)
 
 ## Use Case
 
